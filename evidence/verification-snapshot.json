@@ -1,0 +1,337 @@
+{
+  "verified_at_utc": "2026-10-18T07:04:29.578189+00:00",
+  "mode": "snapshot",
+  "llm_agent": false,
+  "runs": [
+    {
+      "transport": "stdio",
+      "calls": [
+        {
+          "tool": "list_inforesources",
+          "arguments": {
+            "query": "Система единиц",
+            "limit": 5
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "source": "configured_catalog",
+              "resources": [
+                {
+                  "resource_id": "4640056526276364782",
+                  "title": "Система единиц физических величин",
+                  "path": "Загрузки/Система единиц физических величин"
+                }
+              ],
+              "total_matches": 1,
+              "truncated": false,
+              "access_checked": false
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "get_inforesource",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин"
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "resource": {
+                "resource_id": "4640056526276364782",
+                "title": "Система единиц физических величин",
+                "path": "Загрузки/Система единиц физических величин"
+              },
+              "source": "saved_snapshot",
+              "requested_depth": 0,
+              "requested_start": "",
+              "complete_graph": false,
+              "root": {
+                "id": "303808806649860",
+                "name": "Система единиц физических величин",
+                "type": "КОРЕНЬ",
+                "value": null,
+                "meta": "Онтология системы единиц физических величин",
+                "link": null,
+                "link_id": null,
+                "successors": []
+              },
+              "counts": {
+                "node_occurrences": 1,
+                "distinct_defined_ids": 1,
+                "definitions_without_id": 0,
+                "link_occurrences": 0,
+                "edge_occurrences": 0,
+                "scope": "returned_export_including_ancestors",
+                "full_graph_count": false
+              },
+              "warnings": [
+                "Экспорт ограничен глубиной; статистика относится только к полученному фрагменту.",
+                "При start API также возвращает предков. Ссылки не разворачиваются и не считаются новыми уникальными вершинами."
+              ]
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "count_graph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 0
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "resource": {
+                "resource_id": "4640056526276364782",
+                "title": "Система единиц физических величин",
+                "path": "Загрузки/Система единиц физических величин"
+              },
+              "source": "saved_snapshot",
+              "requested_depth": 0,
+              "requested_start": "",
+              "counts": {
+                "node_occurrences": 1,
+                "distinct_defined_ids": 1,
+                "definitions_without_id": 0,
+                "link_occurrences": 0,
+                "edge_occurrences": 0,
+                "scope": "returned_export_including_ancestors",
+                "full_graph_count": false
+              },
+              "warnings": [
+                "Экспорт ограничен глубиной; статистика относится только к полученному фрагменту.",
+                "При start API также возвращает предков. Ссылки не разворачиваются и не считаются новыми уникальными вершинами."
+              ]
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "get_inforesource",
+          "arguments": {
+            "path": "missing"
+          },
+          "isError": true,
+          "result": {
+            "ok": false,
+            "data": null,
+            "error": {
+              "code": "RESOURCE_NOT_CONFIGURED",
+              "message": "Ресурс отсутствует в каталоге сервера.",
+              "hint": "Вызовите list_inforesources и используйте точный path из результата."
+            }
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 99
+          },
+          "isError": true,
+          "result": {
+            "code": "SDK_ARGUMENT_VALIDATION"
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": true
+          },
+          "isError": true,
+          "result": {
+            "code": "SDK_ARGUMENT_VALIDATION"
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 1
+          },
+          "isError": true,
+          "result": {
+            "ok": false,
+            "data": null,
+            "error": {
+              "code": "SNAPSHOT_SCOPE",
+              "message": "Сохранён только корень с depth=0.",
+              "hint": "Для подграфа запустите live-режим; не считайте отсутствие потомков свойством полного графа."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "transport": "http",
+      "calls": [
+        {
+          "tool": "list_inforesources",
+          "arguments": {
+            "query": "Система единиц",
+            "limit": 5
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "source": "configured_catalog",
+              "resources": [
+                {
+                  "resource_id": "4640056526276364782",
+                  "title": "Система единиц физических величин",
+                  "path": "Загрузки/Система единиц физических величин"
+                }
+              ],
+              "total_matches": 1,
+              "truncated": false,
+              "access_checked": false
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "get_inforesource",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин"
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "resource": {
+                "resource_id": "4640056526276364782",
+                "title": "Система единиц физических величин",
+                "path": "Загрузки/Система единиц физических величин"
+              },
+              "source": "saved_snapshot",
+              "requested_depth": 0,
+              "requested_start": "",
+              "complete_graph": false,
+              "root": {
+                "id": "303808806649860",
+                "name": "Система единиц физических величин",
+                "type": "КОРЕНЬ",
+                "value": null,
+                "meta": "Онтология системы единиц физических величин",
+                "link": null,
+                "link_id": null,
+                "successors": []
+              },
+              "counts": {
+                "node_occurrences": 1,
+                "distinct_defined_ids": 1,
+                "definitions_without_id": 0,
+                "link_occurrences": 0,
+                "edge_occurrences": 0,
+                "scope": "returned_export_including_ancestors",
+                "full_graph_count": false
+              },
+              "warnings": [
+                "Экспорт ограничен глубиной; статистика относится только к полученному фрагменту.",
+                "При start API также возвращает предков. Ссылки не разворачиваются и не считаются новыми уникальными вершинами."
+              ]
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "count_graph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 0
+          },
+          "isError": false,
+          "result": {
+            "ok": true,
+            "data": {
+              "resource": {
+                "resource_id": "4640056526276364782",
+                "title": "Система единиц физических величин",
+                "path": "Загрузки/Система единиц физических величин"
+              },
+              "source": "saved_snapshot",
+              "requested_depth": 0,
+              "requested_start": "",
+              "counts": {
+                "node_occurrences": 1,
+                "distinct_defined_ids": 1,
+                "definitions_without_id": 0,
+                "link_occurrences": 0,
+                "edge_occurrences": 0,
+                "scope": "returned_export_including_ancestors",
+                "full_graph_count": false
+              },
+              "warnings": [
+                "Экспорт ограничен глубиной; статистика относится только к полученному фрагменту.",
+                "При start API также возвращает предков. Ссылки не разворачиваются и не считаются новыми уникальными вершинами."
+              ]
+            },
+            "error": null
+          }
+        },
+        {
+          "tool": "get_inforesource",
+          "arguments": {
+            "path": "missing"
+          },
+          "isError": true,
+          "result": {
+            "ok": false,
+            "data": null,
+            "error": {
+              "code": "RESOURCE_NOT_CONFIGURED",
+              "message": "Ресурс отсутствует в каталоге сервера.",
+              "hint": "Вызовите list_inforesources и используйте точный path из результата."
+            }
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 99
+          },
+          "isError": true,
+          "result": {
+            "code": "SDK_ARGUMENT_VALIDATION"
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": true
+          },
+          "isError": true,
+          "result": {
+            "code": "SDK_ARGUMENT_VALIDATION"
+          }
+        },
+        {
+          "tool": "get_subgraph",
+          "arguments": {
+            "path": "Загрузки/Система единиц физических величин",
+            "depth": 1
+          },
+          "isError": true,
+          "result": {
+            "ok": false,
+            "data": null,
+            "error": {
+              "code": "SNAPSHOT_SCOPE",
+              "message": "Сохранён только корень с depth=0.",
+              "hint": "Для подграфа запустите live-режим; не считайте отсутствие потомков свойством полного графа."
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

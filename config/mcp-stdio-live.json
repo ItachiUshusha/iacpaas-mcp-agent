@@ -1,0 +1,18 @@
+{
+  "servers": {
+    "iacpaas": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "${workspaceFolder}/server.py", "--mode", "live"],
+      "env": {"PYTHONUTF8": "1", "IACPAAS_API_KEY": "${input:iacpaas-api-key}", "IACPAAS_TOKEN": ""}
+    }
+  },
+  "inputs": [
+    {
+      "id": "iacpaas-api-key",
+      "type": "promptString",
+      "description": "IACPaaS API key issued by the platform administrator (not your password)",
+      "password": true
+    }
+  ]
+}

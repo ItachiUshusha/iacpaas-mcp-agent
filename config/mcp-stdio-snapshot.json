@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "iacpaas": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": ["-X", "utf8", "${workspaceFolder}/server.py", "--mode", "snapshot"],
+      "env": {"PYTHONUTF8": "1"}
+    }
+  }
+}
