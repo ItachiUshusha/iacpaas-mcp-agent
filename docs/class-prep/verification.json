@@ -1,0 +1,18 @@
+{
+  "verification_local_date": "2026-10-21",
+  "tests_passed": 27,
+  "actual_mcp_snapshot_transports": [
+    "stdio",
+    "http"
+  ],
+  "actual_mcp_snapshot_calls_per_transport": 7,
+  "browser_materials_and_ontology_read": true,
+  "new_live_materials_mcp_verified": true,
+  "real_llm_verified": false,
+  "powershell_5_1_parse": "passed",
+  "materials_api_fragment_depth": 3,
+  "materials_resources_count": 3,
+  "materials_mcp_calls_per_transport": 6,
+  "materials_verified_at_utc": "2026-10-20T14:22:02.411501+00:00",
+  "materials_report": "../../evidence/verification-materials-live.json"
+}

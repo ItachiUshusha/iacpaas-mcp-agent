@@ -69,6 +69,10 @@ class Node(Model):
     type: str | None = None
     value: str | int | float | bool | None = None
     meta: str | None = None
+    valtype: str | None = None
+    comment: str | None = None
+    specifier: str | None = None
+    restrictor: str | None = None
     link: str | None = None
     link_id: str | None = None
     successors: list[Node] = Field(default_factory=list)
@@ -86,6 +90,7 @@ class Counts(Model):
 
 class Graph(Model):
     resource: Resource
+    ontology: str | None = None
     source: Literal["live_api", "saved_snapshot"]
     requested_depth: int
     requested_start: str
@@ -97,6 +102,7 @@ class Graph(Model):
 
 class CountReport(Model):
     resource: Resource
+    ontology: str | None = None
     source: Literal["live_api", "saved_snapshot"]
     requested_depth: int
     requested_start: str
@@ -137,6 +143,8 @@ def project_graph(raw: dict, max_nodes: int) -> tuple[Node, Counts]:
         return Node(
             id=node_id, name=item.get("name"), type=item.get("type"),
             value=item.get("value"), meta=item.get("meta"), link=item.get("link"),
+            valtype=item.get("valtype"), comment=item.get("comment"),
+            specifier=item.get("specifier"), restrictor=item.get("restrictor"),
             link_id=identifier(item.get("link_id")),
             successors=[visit(child, nesting + 1) for child in children],
         )
@@ -171,6 +179,8 @@ class Service:
             if selection.depth != 0 or selection.start:
                 raise Fault("SNAPSHOT_SCOPE", "Сохранён только корень с depth=0.", "Для подграфа запустите live-режим; не считайте отсутствие потомков свойством полного графа.")
             raw = api.normalize_export(json.loads((BASE / "fixtures/root.json").read_text(encoding="utf-8")))
+            if str(raw.get("code")) != resource.resource_id:
+                raise Fault("SNAPSHOT_SCOPE", "Для этого ресурса снимок ещё не сохранён.", "Используйте live-режим; существующий снимок относится только к системе единиц.")
         else:
             try:
                 headers = self.headers if self.headers is not None else api.auth_headers(interactive=False)
@@ -187,6 +197,7 @@ class Service:
             raise Fault("RESOURCE_MISMATCH", "Ответ не соответствует ресурсу каталога.", "Проверьте resource_id, title и path в catalog.json.")
         root, counts = project_graph(raw, selection.max_nodes)
         graph = Graph(resource=resource, source="live_api" if self.mode == "live" else "saved_snapshot",
+                      ontology=raw.get("ontology"),
                       requested_depth=selection.depth, requested_start=selection.start, root=root, counts=counts,
                       warnings=["Экспорт ограничен глубиной; статистика относится только к полученному фрагменту.",
                                 "При start API также возвращает предков. Ссылки не разворачиваются и не считаются новыми уникальными вершинами."])

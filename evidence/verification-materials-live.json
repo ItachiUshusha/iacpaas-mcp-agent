@@ -1,0 +1,80 @@
+{
+  "verified_at_utc": "2026-10-20T14:22:02.411501+00:00",
+  "verified_local_date": "2026-10-21",
+  "timezone": "Asia/Vladivostok",
+  "mode": "live",
+  "llm_agent": false,
+  "report_kind": "summary_from_local_raw_report",
+  "resources": [
+    {
+      "title": "Онтология базы свойств материалов",
+      "resource_id": "4640159837419702766",
+      "api_export_depths": [
+        0,
+        3
+      ]
+    },
+    {
+      "title": "База свойств материалов",
+      "resource_id": "4640160026398263790",
+      "api_export_depths": [
+        0,
+        3
+      ]
+    },
+    {
+      "title": "Онтология описания характеристик и их значений",
+      "resource_id": "4639878564306455022",
+      "api_export_depths": [
+        0,
+        3
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "transport": "stdio",
+      "successful_calls": 6,
+      "tools": [
+        "list_inforesources",
+        "get_inforesource",
+        "get_inforesource",
+        "get_inforesource",
+        "get_subgraph",
+        "count_graph"
+      ],
+      "material_fragment_depth": 1,
+      "fragment_counts": {
+        "node_occurrences": 6,
+        "distinct_defined_ids": 6,
+        "definitions_without_id": 0,
+        "link_occurrences": 0,
+        "edge_occurrences": 5,
+        "scope": "returned_export_including_ancestors",
+        "full_graph_count": false
+      }
+    },
+    {
+      "transport": "http",
+      "successful_calls": 6,
+      "tools": [
+        "list_inforesources",
+        "get_inforesource",
+        "get_inforesource",
+        "get_inforesource",
+        "get_subgraph",
+        "count_graph"
+      ],
+      "material_fragment_depth": 1,
+      "fragment_counts": {
+        "node_occurrences": 6,
+        "distinct_defined_ids": 6,
+        "definitions_without_id": 0,
+        "link_occurrences": 0,
+        "edge_occurrences": 5,
+        "scope": "returned_export_including_ancestors",
+        "full_graph_count": false
+      }
+    }
+  ]
+}

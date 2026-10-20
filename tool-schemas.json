@@ -1,0 +1,1193 @@
+[
+  {
+    "name": "list_inforesources",
+    "title": null,
+    "description": "Search configured resources by title/path. This is a local catalog, not a live listing of the user's fund; access is checked only when reading.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Query",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "list_inforesourcesArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Listing": {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "const": "configured_catalog",
+              "default": "configured_catalog",
+              "title": "Source",
+              "type": "string"
+            },
+            "resources": {
+              "items": {
+                "$ref": "#/$defs/Resource"
+              },
+              "title": "Resources",
+              "type": "array"
+            },
+            "total_matches": {
+              "title": "Total Matches",
+              "type": "integer"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            },
+            "access_checked": {
+              "const": false,
+              "default": false,
+              "title": "Access Checked",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "resources",
+            "total_matches",
+            "truncated"
+          ],
+          "title": "Listing",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Listing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[Listing]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "get_inforesource",
+    "title": null,
+    "description": "Read metadata and root of a configured resource (depth=0). Use exact path returned by list_inforesources. IDs are strings.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "get_inforesourceArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Counts": {
+          "additionalProperties": false,
+          "properties": {
+            "node_occurrences": {
+              "title": "Node Occurrences",
+              "type": "integer"
+            },
+            "distinct_defined_ids": {
+              "title": "Distinct Defined Ids",
+              "type": "integer"
+            },
+            "definitions_without_id": {
+              "title": "Definitions Without Id",
+              "type": "integer"
+            },
+            "link_occurrences": {
+              "title": "Link Occurrences",
+              "type": "integer"
+            },
+            "edge_occurrences": {
+              "title": "Edge Occurrences",
+              "type": "integer"
+            },
+            "scope": {
+              "const": "returned_export_including_ancestors",
+              "default": "returned_export_including_ancestors",
+              "title": "Scope",
+              "type": "string"
+            },
+            "full_graph_count": {
+              "const": false,
+              "default": false,
+              "title": "Full Graph Count",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "node_occurrences",
+            "distinct_defined_ids",
+            "definitions_without_id",
+            "link_occurrences",
+            "edge_occurrences"
+          ],
+          "title": "Counts",
+          "type": "object"
+        },
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Graph": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "ontology": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ontology"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "requested_start": {
+              "title": "Requested Start",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "root": {
+              "$ref": "#/$defs/Node"
+            },
+            "counts": {
+              "$ref": "#/$defs/Counts"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "requested_start",
+            "root",
+            "counts",
+            "warnings"
+          ],
+          "title": "Graph",
+          "type": "object"
+        },
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Id"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Type"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Value"
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Meta"
+            },
+            "valtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Valtype"
+            },
+            "comment": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Comment"
+            },
+            "specifier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Specifier"
+            },
+            "restrictor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Restrictor"
+            },
+            "link": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Link"
+            },
+            "link_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Link Id"
+            },
+            "successors": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "title": "Successors",
+              "type": "array"
+            }
+          },
+          "title": "Node",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Graph"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[Graph]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "get_subgraph",
+    "title": null,
+    "description": "Read a bounded universal export, depth 0..3. Empty start means resource root; otherwise use a known IACPaaS concept path. Ancestors may be included. Snapshot mode has only depth=0.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "depth": {
+          "default": 1,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "start": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Start",
+          "type": "string"
+        },
+        "max_nodes": {
+          "default": 100,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Nodes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "get_subgraphArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Counts": {
+          "additionalProperties": false,
+          "properties": {
+            "node_occurrences": {
+              "title": "Node Occurrences",
+              "type": "integer"
+            },
+            "distinct_defined_ids": {
+              "title": "Distinct Defined Ids",
+              "type": "integer"
+            },
+            "definitions_without_id": {
+              "title": "Definitions Without Id",
+              "type": "integer"
+            },
+            "link_occurrences": {
+              "title": "Link Occurrences",
+              "type": "integer"
+            },
+            "edge_occurrences": {
+              "title": "Edge Occurrences",
+              "type": "integer"
+            },
+            "scope": {
+              "const": "returned_export_including_ancestors",
+              "default": "returned_export_including_ancestors",
+              "title": "Scope",
+              "type": "string"
+            },
+            "full_graph_count": {
+              "const": false,
+              "default": false,
+              "title": "Full Graph Count",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "node_occurrences",
+            "distinct_defined_ids",
+            "definitions_without_id",
+            "link_occurrences",
+            "edge_occurrences"
+          ],
+          "title": "Counts",
+          "type": "object"
+        },
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Graph": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "ontology": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ontology"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "requested_start": {
+              "title": "Requested Start",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "root": {
+              "$ref": "#/$defs/Node"
+            },
+            "counts": {
+              "$ref": "#/$defs/Counts"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "requested_start",
+            "root",
+            "counts",
+            "warnings"
+          ],
+          "title": "Graph",
+          "type": "object"
+        },
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Id"
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Name"
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Type"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Value"
+            },
+            "meta": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Meta"
+            },
+            "valtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Valtype"
+            },
+            "comment": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Comment"
+            },
+            "specifier": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Specifier"
+            },
+            "restrictor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Restrictor"
+            },
+            "link": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Link"
+            },
+            "link_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Link Id"
+            },
+            "successors": {
+              "items": {
+                "$ref": "#/$defs/Node"
+              },
+              "title": "Successors",
+              "type": "array"
+            }
+          },
+          "title": "Node",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Graph"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[Graph]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "count_graph",
+    "title": null,
+    "description": "Count occurrences, defined IDs and links in a bounded export, including ancestors. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "depth": {
+          "default": 0,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "start": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Start",
+          "type": "string"
+        },
+        "max_nodes": {
+          "default": 100,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Nodes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "count_graphArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CountReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "ontology": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ontology"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "requested_start": {
+              "title": "Requested Start",
+              "type": "string"
+            },
+            "counts": {
+              "$ref": "#/$defs/Counts"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "requested_start",
+            "counts",
+            "warnings"
+          ],
+          "title": "CountReport",
+          "type": "object"
+        },
+        "Counts": {
+          "additionalProperties": false,
+          "properties": {
+            "node_occurrences": {
+              "title": "Node Occurrences",
+              "type": "integer"
+            },
+            "distinct_defined_ids": {
+              "title": "Distinct Defined Ids",
+              "type": "integer"
+            },
+            "definitions_without_id": {
+              "title": "Definitions Without Id",
+              "type": "integer"
+            },
+            "link_occurrences": {
+              "title": "Link Occurrences",
+              "type": "integer"
+            },
+            "edge_occurrences": {
+              "title": "Edge Occurrences",
+              "type": "integer"
+            },
+            "scope": {
+              "const": "returned_export_including_ancestors",
+              "default": "returned_export_including_ancestors",
+              "title": "Scope",
+              "type": "string"
+            },
+            "full_graph_count": {
+              "const": false,
+              "default": false,
+              "title": "Full Graph Count",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "node_occurrences",
+            "distinct_defined_ids",
+            "definitions_without_id",
+            "link_occurrences",
+            "edge_occurrences"
+          ],
+          "title": "Counts",
+          "type": "object"
+        },
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CountReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[CountReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  }
+]

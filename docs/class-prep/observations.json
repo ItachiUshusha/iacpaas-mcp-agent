@@ -1,0 +1,67 @@
+{
+  "source": "authenticated_iacpaas_browser_viewer",
+  "observed_local_dates": [
+    "2026-10-20",
+    "2026-10-21"
+  ],
+  "new_api_export_verified": true,
+  "subgroup_assignment": "No separate topic communicated; pair selected for initial study",
+  "ontology": {
+    "title": "Онтология базы свойств материалов",
+    "resource_id": "4640159837419702766",
+    "ui_concepts": 7,
+    "ui_relations_including_outgoing": 11,
+    "ui_complete": true
+  },
+  "resource": {
+    "title": "База свойств материалов",
+    "resource_id": "4640160026398263790",
+    "ui_concepts": 230,
+    "ui_relations_including_outgoing": 229,
+    "ui_complete": false,
+    "ontology_link_verified_in_ui": true
+  },
+  "top_classes": [
+    "Физические свойства",
+    "Механические свойства",
+    "Технологические свойства",
+    "Эксплуатационные свойства",
+    "Химические свойства"
+  ],
+  "example": {
+    "class": "Физические свойства",
+    "name": "Плотность вещества",
+    "meta": "Свойство",
+    "units": [
+      "кг/м³",
+      "г/см³"
+    ],
+    "synonyms": [
+      "Плотность",
+      "Плотность материала"
+    ],
+    "possible_values": {
+      "form": "Числовой интервал",
+      "observed_lower_boundary": 0.0,
+      "upper_boundary_children": "absent"
+    },
+    "concrete_material_measurement": false
+  },
+  "ui_completeness_warning": {
+    "path": [
+      "База свойств материалов",
+      "Физические свойства",
+      "Температура плавления",
+      "Возможные значения",
+      "Числовой интервал",
+      "Верхняя граница"
+    ],
+    "missing_target": "Числовое значение"
+  },
+  "not_claimed": [
+    "All resources studied",
+    "Numerical density of a specific alloy",
+    "Working real LLM agent"
+  ],
+  "api_verification_report": "../../evidence/verification-materials-live.json"
+}
