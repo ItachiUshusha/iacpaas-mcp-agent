@@ -14,7 +14,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from agent_core import Agent, AgentError, Trace
-from providers import OpenAIModel, OllamaModel
+from providers import OpenAIModel, OllamaModel, CompatibleModel
 from smoke import connect
 import iacpaas_client as api
 
@@ -45,8 +45,11 @@ async def connection(args, env):
 
 async def run(args, env, key, trace):
     instructions = (BASE / "agent_instructions.md").read_text(encoding="utf-8")
-    async with httpx.AsyncClient(timeout=180, follow_redirects=False, trust_env=args.provider == "openai") as client:
-        model = OpenAIModel(client, args.model, key, instructions) if args.provider == "openai" else OllamaModel(client, args.model, instructions)
+    async with httpx.AsyncClient(timeout=180, follow_redirects=False, trust_env=args.provider != "ollama") as client:
+        if args.provider == "compatible":
+            model = CompatibleModel(client, args.model, key, instructions, args.base_url)
+        else:
+            model = OpenAIModel(client, args.model, key, instructions) if args.provider == "openai" else OllamaModel(client, args.model, instructions)
         async with connection(args, env) as session:
             agent = Agent(session, model, trace)
             await agent.initialize()
@@ -64,25 +67,27 @@ async def run(args, env, key, trace):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", choices=["openai", "ollama"], required=True)
-    parser.add_argument("--model", help="Exact model ID; alternatively OPENAI_MODEL or OLLAMA_MODEL")
+    parser.add_argument("--provider", choices=["openai", "ollama", "compatible"], required=True)
+    parser.add_argument("--base-url", default=os.environ.get("AI_BASE_URL", "https://openrouter.ai/api/v1"))
+    parser.add_argument("--model", help="Exact model ID; alternatively AI_MODEL, OPENAI_MODEL or OLLAMA_MODEL")
     parser.add_argument("--mode", choices=["snapshot", "live"], default="snapshot")
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--mcp-url", help="Connect to an already-running local HTTP server; its mode and login apply")
     parser.add_argument("--question", help="One question instead of interactive chat")
     args = parser.parse_args()
-    args.model = args.model or os.environ.get("OPENAI_MODEL" if args.provider == "openai" else "OLLAMA_MODEL")
+    args.model = args.model or os.environ.get({"openai": "OPENAI_MODEL", "ollama": "OLLAMA_MODEL", "compatible": "AI_MODEL"}[args.provider])
     if not args.model:
         parser.error("Укажите --model с точным ID доступной модели. Для Ollama имена показывает ollama list.")
     key = ""
     trace = None
     try:
-        if args.provider == "openai":
-            key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if args.provider in ("openai", "compatible"):
+            key_var = "OPENAI_API_KEY" if args.provider == "openai" else "AI_API_KEY"
+            key = os.environ.get(key_var, "").strip()
             if not key and sys.stdin.isatty():
-                key = getpass.getpass("OpenAI API key (ввод скрыт): ").strip()
+                key = getpass.getpass("API key модели (ввод скрыт): ").strip()
             if not key:
-                raise AgentError("Для OpenAI API нужен ключ OPENAI_API_KEY или скрытый ввод в терминале.")
+                raise AgentError(f"Нужен ключ {key_var} или скрытый ввод в терминале.")
         # Model credentials never reach the MCP child process.
         env = child_environment()
         secrets = [key]

@@ -78,6 +78,25 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 result = await agent.execute(call)
                 self.assertEqual(result["error"]["code"], expected)
 
+    async def test_graph_tools_are_offered_only_after_path_discovery(self):
+        offered = []
+        class DiscoveryModel:
+            def add_user(self, text):
+                pass
+            def add_result(self, call, result):
+                self.path = result["data"]["resources"][0]["path"]
+            async def step(self, tools):
+                offered.append({t["name"] for t in tools})
+                if len(offered) == 1:
+                    return Turn([Call("1", "list_inforesources", {"query": "Система единиц"})])
+                return Turn(text="Ресурс найден.")
+        async with connect("stdio", "snapshot", child_environment()) as session:
+            agent = Agent(session, DiscoveryModel(), self.trace)
+            await agent.initialize()
+            await agent.answer("Найди ресурс")
+        self.assertEqual(offered[0], {"list_inforesources"})
+        self.assertIn("count_graph", offered[1])
+
     async def test_clarification_preserves_conversation(self):
         model = ScriptedModel([Turn(text="Какой ресурс нужно прочитать?"), Turn(text="Название принято.")])
         agent = Agent(None, model, self.trace)

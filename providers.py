@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -102,3 +103,58 @@ class OllamaModel:
                 raise AgentError("Ollama вернула некорректный вызов инструмента.")
             calls.append(Call(str(i), function["name"], function.get("arguments")))
         return Turn(calls, message.get("content") or "")
+
+
+class CompatibleModel:
+    """Chat completions with tool calling, e.g. free models on OpenRouter."""
+    def __init__(self, client, model, key, instructions, base_url):
+        parsed = urlsplit(base_url)
+        if (parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"))) or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise AgentError("Адрес API должен быть HTTPS либо локальным HTTP, без пароля и параметров в URL.")
+        self.client, self.model, self.key = client, model, key
+        self.url = base_url.rstrip("/") + "/chat/completions"
+        self.history = [{"role": "system", "content": instructions}]
+
+    def add_user(self, text):
+        self.history.append({"role": "user", "content": text})
+
+    def add_result(self, call, result):
+        self.history.append({"role": "tool", "tool_call_id": call.id,
+                             "content": json.dumps(result, ensure_ascii=False)})
+
+    async def step(self, tools):
+        definitions = [{"type": "function", "function": {"name": t["name"],
+            "description": t.get("description", ""), "parameters": t["inputSchema"]}} for t in tools]
+        payload = {"model": self.model, "messages": self.history, "tools": definitions,
+                   "stream": False, "max_tokens": 4096}
+        if urlsplit(self.url).hostname == "openrouter.ai":
+            # Require tool support; never let automatic routing use a paid fallback.
+            payload["provider"] = {"require_parameters": True, "max_price": {"prompt": 0, "completion": 0}}
+        result = await post_json(self.client, self.url, payload,
+                                 {"Authorization": f"Bearer {self.key}"} if self.key else {})
+        choices = result.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise AgentError("API модели не вернул choices. Проверьте поддержку Chat Completions.")
+        choice = choices[0]
+        message = choice.get("message")
+        if choice.get("finish_reason") not in ("stop", "tool_calls") or not isinstance(message, dict) or message.get("role") != "assistant":
+            raise AgentError("Модель не завершила ответ. Проверьте лимит вывода и поддержку инструментов.")
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise AgentError("Модель вернула неожиданный формат текста.")
+        raw_calls = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise AgentError("Модель вернула некорректные tool_calls.")
+        calls = []
+        for item in raw_calls:
+            if not isinstance(item, dict) or not isinstance(item.get("function"), dict):
+                raise AgentError("Модель вернула некорректный вызов инструмента.")
+            f = item["function"]
+            if not all(isinstance(v, str) and v for v in (item.get("id"), f.get("name"))) or not isinstance(f.get("arguments"), str):
+                raise AgentError("Модель вернула некорректные аргументы инструмента.")
+            calls.append(Call(item["id"], f["name"], f["arguments"]))
+        if len({c.id for c in calls}) != len(calls):
+            raise AgentError("Модель вернула повторяющиеся ID вызовов.")
+        # Preserve provider continuation fields, including reasoning_details.
+        self.history.append(message)
+        return Turn(calls, content or "")

@@ -117,7 +117,9 @@ class Agent:
         self.model.add_user(question)
         calls = 0
         for round_index in range(self.max_rounds):
-            turn = await self.model.step(list(self.tools.values()))
+            # The model must discover exact paths before being offered graph reads.
+            visible = list(self.tools.values()) if self.known_paths else [self.tools["list_inforesources"]] if self.tools else []
+            turn = await self.model.step(visible)
             self.trace.add("model_turn", round=round_index + 1, tool_calls=len(turn.calls))
             if not turn.calls:
                 if not turn.text.strip():
