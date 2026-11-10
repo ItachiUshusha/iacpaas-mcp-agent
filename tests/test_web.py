@@ -57,7 +57,7 @@ class WebTests(unittest.TestCase):
                     name, arguments = "count_graph", {"path": data["data"]["resources"][0]["path"], "depth": 0}
                 else:
                     self.assertEqual(data["data"]["counts"]["node_occurrences"], 1)
-                    return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Снимок: 1 вершина, 0 связей."}}]}
+                    return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "Снимок: 1 вершина, 0 связей. [" + data["evidence_refs"][0]["id"] + "]"}}]}
             return {"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "content": None,
                 "tool_calls": [{"id": str(len(history)), "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]}}]}
 
@@ -74,6 +74,8 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 result = response.json()
                 self.assertIn("1 вершина", result["answer"])
+                self.assertEqual(result["grounding"]["status"], "cited")
+                self.assertEqual(result["grounding"]["sources"][0]["source"], "saved_snapshot")
                 calls = [e for e in result["events"] if e["event"] == "tool_call"]
                 self.assertEqual([c["name"] for c in calls], ["list_inforesources", "count_graph"])
                 self.assertEqual(calls[-1]["result"]["data"]["source"], "saved_snapshot")

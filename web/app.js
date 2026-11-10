@@ -26,8 +26,8 @@ function facts(el,items){
   const matches=(items||[]).filter(e=>e.event==='tool_call'&&e.result?.ok&&e.result.data?.counts&&e.result.data?.resource);
   const data=matches.at(-1)?.result.data;
   if(!data)return;
-  const box=document.createElement('section');box.className='facts';box.setAttribute('aria-label','Подтверждённые данные MCP');
-  const heading=document.createElement('div');heading.className='facts-heading';heading.textContent='ПОДТВЕРЖДЕНО ИНСТРУМЕНТАМИ';
+  const box=document.createElement('section');box.className='facts';box.setAttribute('aria-label','Статистика прочитанного фрагмента');
+  const heading=document.createElement('div');heading.className='facts-heading';heading.textContent='ПРОЧИТАННЫЙ ФРАГМЕНТ';
   const title=document.createElement('div');title.className='facts-title';title.textContent=data.resource.title;
   const metrics=document.createElement('dl');metrics.className='metrics';
   for(const [label,value] of [['Вершин',data.counts.node_occurrences],['Связей',data.counts.edge_occurrences],['Глубина',data.requested_depth]]){
@@ -35,8 +35,8 @@ function facts(el,items){
     dt.textContent=label;dd.textContent=String(value);group.append(dt,dd);metrics.append(group);
   }
   const scope=document.createElement('p');scope.className='scope';
-  scope.textContent=(data.source==='saved_snapshot'?'Сохранённый снимок':data.source==='live_api'?'Живой API':data.source)+' · Только полученный фрагмент, не весь граф';
-  box.append(heading,title,metrics,scope);el.insertBefore(box,el.querySelector('.content'));
+  scope.textContent=(data.source==='saved_snapshot'?'Сохранённый снимок':data.source==='live_api'?'Живой API':data.source)+' · Статистика чтения, не подтверждение вывода модели';
+  box.append(heading,title,metrics,scope);el.append(box);
 }
 
 function events(el,items){
@@ -45,7 +45,7 @@ function events(el,items){
   const failed=calls.filter(e=>!e.result?.ok).length;
   const heading=document.createElement('p');heading.className='tool-heading';
   heading.textContent=`Вызовы инструментов: ${calls.length-failed} успешно`+(failed?`, ${failed} с ошибкой`:'');log.append(heading);
-  const names={list_inforesources:'Поиск ресурса',get_inforesource:'Чтение корня',get_subgraph:'Чтение фрагмента',count_graph:'Подсчёт фрагмента'};
+  const names={list_inforesources:'Поиск ресурса',get_inforesource:'Чтение корня',get_subgraph:'Чтение фрагмента',count_graph:'Подсчёт фрагмента',create_folder:'Создание папки',delete_folder:'Удаление папки в корзину',search_inforesource:'Поиск внутри ресурса',compare_node_children:'Пересечение двух списков'};
   for(const item of calls){
     const d=document.createElement('details'),s=document.createElement('summary'),p=document.createElement('pre');
     d.className=item.result?.ok?'tool-ok':'tool-error';
@@ -61,6 +61,7 @@ async function status(){
   try{
     const r=await fetch('/api/status');if(!r.ok)throw Error();const s=await r.json();token=s.token;
     $('#status').textContent=`${s.model}\n${s.source==='snapshot'?'Сохранённый корень':s.source==='live'?'Живой API':'Режим MCP-сервера'}\n${s.model_configured?'Параметры модели заданы':'Ожидается API-ключ в терминале'}`;
+    if(s.generation?.deterministic)$('#status').textContent+='\nВоспроизводимый режим · seed '+s.generation.seed;
     $('#status').style.whiteSpace='pre-line';
   }catch{$('#status').textContent='Сервер недоступен. Проверьте терминал.';}
 }
@@ -76,7 +77,7 @@ async function send(question){
     const data=await r.json();if(data.session)session=data.session;if(data.reset)session='';
     preservedTop=history.scrollTop;followReply=Math.abs(preservedTop-waitingTop)<8;
     renderChatMarkdown(answer.querySelector('.content'),data.answer||data.error||'Не удалось получить ответ.');
-    if(!r.ok)answer.classList.add('error');facts(answer,data.events);events(answer,data.events);
+    if(!r.ok)answer.classList.add('error');grounding(answer,data.grounding);comparison(answer,data.events);facts(answer,data.events);events(answer,data.events);
   }catch{
     answer.querySelector('.content').textContent='Соединение прервано. Ответ не подтверждён; начните новый диалог перед повтором.';answer.classList.add('error');
   }finally{
@@ -97,3 +98,60 @@ $('#reset').addEventListener('click',async()=>{
   }catch{$('#hint').textContent='Не удалось завершить диалог. Проверьте соединение.';}
 });
 status();
+
+function grounding(el,audit){
+  if(!audit)return;
+  const panel=document.createElement('section');panel.className='grounding '+audit.status;
+  const title=document.createElement('strong');
+  title.textContent=audit.status==='cited'?'ССЫЛКИ НА ЗАПИСИ ПРОВЕРЕНЫ':'ВЫВОД НЕ ПОДТВЕРЖДЁН ССЫЛКАМИ';
+  const note=document.createElement('p');note.textContent=audit.note;panel.append(title,note);
+  const targets=new Map();
+  for(const source of audit.sources||[]){
+    const d=document.createElement('details'),summary=document.createElement('summary');
+    summary.textContent='['+source.evidence_id+'] '+source.trail.join(' → ');
+    const provenance=document.createElement('p');
+    provenance.textContent=source.resource.title+' · '+source.resource.path+' · '+
+      (source.source==='live_api'?'Живой API':'Сохранённый снимок')+' · Глубина '+source.requested_depth;
+    const locator=document.createElement('p');locator.textContent='Указатель в экспорте: '+(source.pointer||'(корень)');
+    const raw=document.createElement('pre');raw.textContent=JSON.stringify({fields:source.fields,children:source.children,children_truncated:source.children_truncated},null,2);
+    d.append(summary,provenance,locator,raw);panel.append(d);targets.set(source.evidence_id,d);
+  }
+  el.append(panel);
+  // Turn existing evidence markers into local controls, never into model-supplied URLs.
+  const walker=document.createTreeWalker(el.querySelector('.content'),NodeFilter.SHOW_TEXT);
+  const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
+  for(const text of nodes){
+    if(text.parentElement.closest('pre,code,a,button'))continue;
+    const pattern=/\[(E[A-Za-z0-9]+)\]/g;
+    let found,offset=0;const fragment=document.createDocumentFragment();
+    while((found=pattern.exec(text.nodeValue))){
+      fragment.append(document.createTextNode(text.nodeValue.slice(offset,found.index)));
+      const target=targets.get(found[1]);
+      if(target){
+        const button=document.createElement('button');button.type='button';button.className='evidence-link';
+        button.textContent=found[0];button.title='Показать исходную запись';
+        button.onclick=()=>{target.open=true;target.scrollIntoView({block:'nearest',behavior:'smooth'});};
+        fragment.append(button);
+      }else fragment.append(document.createTextNode(found[0]));
+      offset=pattern.lastIndex;
+    }
+    if(offset){fragment.append(document.createTextNode(text.nodeValue.slice(offset)));text.replaceWith(fragment);}
+  }
+}
+
+function comparison(el,items){
+  const found=(items||[]).filter(e=>e.event==='tool_call'&&e.name==='compare_node_children'&&e.result?.ok).at(-1);
+  if(!found)return;
+  const data=found.result.data,panel=document.createElement('section');panel.className='comparison';
+  const title=document.createElement('strong');title.textContent='ПЕРЕСЕЧЕНИЕ СПИСКОВ — РЕЗУЛЬТАТ КОДА';
+  const paths=document.createElement('p');paths.textContent=data.left.trail.join(' → ')+' / '+data.right.trail.join(' → ');
+  const list=document.createElement('ul');
+  for(const item of data.common){
+    const li=document.createElement('li');li.textContent=item.label+' — слева: '+
+      item.left_evidence.map(e=>e.evidence_id).join(', ')+', справа: '+item.right_evidence.map(e=>e.evidence_id).join(', ');
+    list.append(li);
+  }
+  const scope=document.createElement('p');scope.textContent=data.rule+' Результат относится только к выбранным спискам.';
+  if(!data.common.length){const empty=document.createElement('p');empty.textContent='В этих двух списках совпадающих меток не найдено.';list.append(empty);}
+  panel.append(title,paths,list,scope);el.append(panel);
+}

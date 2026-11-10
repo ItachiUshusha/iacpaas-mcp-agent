@@ -92,7 +92,7 @@ class NoRedirect(HTTPRedirectHandler):
         raise ClientError("Сервер перенаправил запрос. Адрес API нужно проверить.")
 
 
-def request_json(endpoint, *, headers=None, payload=None, query=None):
+def request_json(endpoint, *, headers=None, payload=None, query=None, method=None):
     url = BASE_URL + endpoint
     if query:
         url += "?" + urlencode(query)
@@ -101,7 +101,7 @@ def request_json(endpoint, *, headers=None, payload=None, query=None):
     request_headers.update(headers or {})
     if body is not None:
         request_headers["Content-Type"] = "application/json"
-    request = Request(url, data=body, headers=request_headers)
+    request = Request(url, data=body, headers=request_headers, method=method)
     try:
         with build_opener(NoRedirect()).open(request, timeout=TIMEOUT) as response:
             raw = response.read(MAX_BYTES + 1)
@@ -124,7 +124,7 @@ def request_json(endpoint, *, headers=None, payload=None, query=None):
         raise ClientError("Сервер вернул не JSON. Проверьте доступность API.") from None
     if not isinstance(result, dict):
         raise ClientError("Сервер вернул неожиданный формат JSON.")
-    if result.get("success") is False or result.get("error"):
+    if result.get("success") is False or result.get("error") or result.get("platformUnavailable") is True:
         raise ClientError("IACPaaS сообщил об ошибке. Проверьте права доступа и путь ресурса в «Моём Фонде».")
     return result
 
@@ -230,6 +230,44 @@ def main(argv=None):
         print("\nВыполнение отменено.", file=sys.stderr)
         return 130
     return 0
+
+
+
+def folder_path(path, *, allow_root=False):
+    """Validate an exact relative fund path without silently changing its target."""
+    if not isinstance(path, str) or len(path) > 512:
+        raise ClientError("Путь каталога должен быть строкой длиной до 512 символов.")
+    if path == "" and allow_root:
+        return path
+    parts = path.split("/")
+    if (not path or any(p in ("", ".", "..", "Мой Фонд") or p != p.strip() for p in parts)
+            or any(ord(c) < 32 or ord(c) == 127 or c in "\\:;$" for c in path)):
+        raise ClientError("Нужен относительный путь с разделителем /, без префикса «Мой Фонд», пустых частей и .. .")
+    return path
+
+
+def require_mutation_success(result):
+    if result.get("success") is not True or result.get("error") or result.get("platformUnavailable") is True:
+        raise ClientError("API не подтвердил изменение. Проверьте папку перед повтором запроса.")
+
+
+def create_folder(parent, name, *, description="", headers=None):
+    folder_path(parent, allow_root=True)
+    folder_path(name)
+    if "/" in name:
+        raise ClientError("Имя папки должно состоять из одного компонента пути.")
+    folder_path(f"{parent}/{name}" if parent else name)
+    result = request_json("/api/storage-unit/folder/create", method="POST", headers=headers,
+                          payload={"path": parent, "name": name, "description": description})
+    require_mutation_success(result)
+
+
+def delete_folder(path, *, headers=None):
+    """Use the documented fund deletion API, always moving to trash."""
+    folder_path(path)
+    result = request_json("/api/data/delete", method="DELETE", headers=headers,
+                          payload={"path": path, "mode": "trashIR"})
+    require_mutation_success(result)
 
 
 if __name__ == "__main__":

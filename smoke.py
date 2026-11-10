@@ -69,7 +69,7 @@ async def exercise(session, mode):
     await session.initialize()
     tools = (await session.list_tools()).tools
     schemas = {tool.name: tool.outputSchema for tool in tools}
-    assert set(schemas) == {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph"}
+    assert set(schemas) == {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph", "create_folder", "delete_folder", "search_inforesource", "compare_node_children"}
     assert all(schemas.values()), "Every tool needs an output schema"
     traces = []
 

@@ -68,10 +68,10 @@ def generate_notes(manifest, directory):
     (directory / "FACTS.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def collect(headers, depth, directory):
+def collect(headers, depth, directory, targets=None):
     manifest = {"collected_at_utc": datetime.now(timezone.utc).isoformat(), "source": "live_api", "resources": []}
     catalog = json.loads((BASE / "catalog.json").read_text(encoding="utf-8"))
-    for slug, title, role in TARGETS:
+    for slug, title, role in (TARGETS if targets is None else targets):
         print("Чтение: " + title, flush=True)
         item = {"title": title, "role": role, "path": "Загрузки/" + title}
         manifest["resources"].append(item)
@@ -110,14 +110,19 @@ def collect(headers, depth, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--depth", type=int, choices=range(1, 4), default=3)
+    parser.add_argument("--depth", type=int, choices=range(1, 11), default=3)
     parser.add_argument("--verify-mcp", action="store_true", help="After collection, verify registered resources through stdio and HTTP with the same login")
+    parser.add_argument("--gases", action="store_true", help="Collect chemical substances and metalwire materials to locate gas records")
     args = parser.parse_args()
+    if args.gases and args.verify_mcp:
+        parser.error("--verify-mcp applies to the original material properties study, not --gases")
     try:
         headers = api.auth_headers()
         directory = BASE / "data/materials-study" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:6])
         directory.mkdir(parents=True)
-        manifest = collect(headers, args.depth, directory)
+        targets = [("chemicals", "База химических элементов и веществ", "data"),
+                   ("metalwire", "База металлопроволочных материалов", "data")] if args.gases else None
+        manifest = collect(headers, args.depth, directory, targets)
         complete = all(r.get("fragment_file") for r in manifest["resources"])
         print("\nРезультаты: " + str(directory), flush=True)
         print("Разбор дерева: " + str(directory / "FACTS.md"), flush=True)

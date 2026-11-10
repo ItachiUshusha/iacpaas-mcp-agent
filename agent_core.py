@@ -9,7 +9,12 @@ from uuid import uuid4
 
 import jsonschema
 
-ALLOWED_TOOLS = {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph"}
+from answer_evidence import collect_evidence, audit_answer
+
+READ_TOOLS = {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph"}
+SEARCH_TOOLS = {"search_inforesource", "compare_node_children"}
+WRITE_TOOLS = {"create_folder", "delete_folder"}
+ALLOWED_TOOLS = READ_TOOLS | WRITE_TOOLS | SEARCH_TOOLS
 
 
 class AgentError(Exception):
@@ -66,31 +71,43 @@ class Agent:
         self.max_rounds, self.max_calls = max_rounds, max_calls
         self.tools = {}
         self.known_paths = set()
+        self.attempted_writes = set()
+        self.evidence = {}
+        self.last_grounding = audit_answer('', {})
 
     async def initialize(self):
         await self.session.initialize()
-        for tool in (await self.session.list_tools()).tools:
+        for tool in sorted((await self.session.list_tools()).tools, key=lambda t: t.name):
             if tool.name not in ALLOWED_TOOLS:
                 continue
-            if not tool.annotations or tool.annotations.readOnlyHint is not True:
-                raise AgentError("Сервер не подтвердил read-only для ожидаемого инструмента.")
+            expected_read = tool.name in READ_TOOLS | SEARCH_TOOLS
+            if not tool.annotations or tool.annotations.readOnlyHint is not expected_read:
+                raise AgentError("Аннотации MCP не соответствуют политике инструмента.")
+            if tool.name == "delete_folder" and tool.annotations.destructiveHint is not True:
+                raise AgentError("Сервер не пометил удаление как destructive.")
             item = tool.model_dump(mode="json")
             item["inputSchema"]["additionalProperties"] = False
             self.tools[tool.name] = item
-        if set(self.tools) != ALLOWED_TOOLS:
+        if not READ_TOOLS.issubset(self.tools):
             raise AgentError("MCP-сервер не предоставил четыре ожидаемых инструмента чтения.")
         self.trace.add("tools_discovered", names=sorted(self.tools))
 
     async def execute(self, call):
         if call.name not in self.tools:
-            return failure("POLICY_DENIED", "Инструмент запрещён политикой чтения.", "Используйте один из опубликованных инструментов; запись недоступна.")
+            return failure("POLICY_DENIED", "Инструмент не разрешён.", "Используйте только опубликованные инструменты чтения и каталогов.")
         try:
             arguments = json.loads(call.arguments) if isinstance(call.arguments, str) else call.arguments
             jsonschema.validate(arguments, self.tools[call.name]["inputSchema"])
         except (ValueError, jsonschema.ValidationError, TypeError):
             return failure("INVALID_ARGUMENT", "Аргументы не соответствуют JSON Schema.", "Исправьте аргументы по схеме; глубина 0..3, max_nodes 1..200.")
-        if call.name != "list_inforesources" and arguments.get("path") not in self.known_paths:
+        if call.name in (READ_TOOLS | SEARCH_TOOLS) - {"list_inforesources"} and arguments.get("path") not in self.known_paths:
             return failure("PATH_NOT_DISCOVERED", "Путь ещё не подтверждён каталогом.", "Сначала вызовите list_inforesources, затем используйте точный path из результата.")
+        if call.name in WRITE_TOOLS:
+            signature = (call.name, json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+            if signature in self.attempted_writes:
+                return failure("WRITE_ALREADY_ATTEMPTED", "Этот запрос изменения уже отправлялся в текущем диалоге.",
+                               "Проверьте папку в IACPaaS. Для намеренного повторения начните новый диалог.")
+            self.attempted_writes.add(signature)
         try:
             response = await self.session.call_tool(call.name, arguments)
         except Exception:
@@ -118,12 +135,15 @@ class Agent:
         calls = 0
         for round_index in range(self.max_rounds):
             # The model must discover exact paths before being offered graph reads.
-            visible = list(self.tools.values()) if self.known_paths else [self.tools["list_inforesources"]] if self.tools else []
+            visible = [self.tools[name] for name in sorted(self.tools)
+                       if self.known_paths or name == "list_inforesources" or name in WRITE_TOOLS]
             turn = await self.model.step(visible)
             self.trace.add("model_turn", round=round_index + 1, tool_calls=len(turn.calls))
             if not turn.calls:
                 if not turn.text.strip():
                     raise AgentError("Модель не вернула ни ответ, ни вызов инструмента.")
+                self.last_grounding = audit_answer(turn.text, self.evidence)
+                self.trace.add("answer_grounding", **self.last_grounding)
                 self.trace.add("assistant", text=turn.text)
                 return turn.text
             if calls + len(turn.calls) > self.max_calls:
@@ -132,5 +152,12 @@ class Agent:
                 result = await self.execute(call)
                 calls += 1
                 self.trace.add("tool_call", name=call.name, arguments=call.arguments, result=result)
-                self.model.add_result(call, result)
+                refs = collect_evidence(result.get("data")) if result.get("ok") else []
+                self.evidence.update({r["evidence_id"]: r for r in refs})
+                # Metadata added to model context is separate from the validated MCP result.
+                context_result = dict(result)
+                if refs:
+                    context_result["evidence_refs"] = [{"id": r["evidence_id"], "pointer": r["pointer"],
+                                                      "trail": r["trail"]} for r in refs]
+                self.model.add_result(call, context_result)
         raise AgentError("Достигнут лимит шагов модели; итоговый ответ не получен. Сузьте запрос.")

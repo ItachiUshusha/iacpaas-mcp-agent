@@ -18,6 +18,7 @@ import uvicorn
 from agent import connection, child_environment
 from agent_core import Agent, AgentError, Trace
 from providers import CompatibleModel, OllamaModel, OpenAIModel
+from generation import add_generation_arguments, generation_from_args
 import iacpaas_client as api
 
 BASE = Path(__file__).resolve().parent
@@ -34,6 +35,7 @@ class BrowserTrace(Trace):
 
 
 def create_app(args, env, key, model_factory=None, connector=connection):
+    generation = generation_from_args(args)
     chats = {}
     lock = asyncio.Lock()
     token = secrets.token_urlsafe(32)
@@ -66,7 +68,7 @@ def create_app(args, env, key, model_factory=None, connector=connection):
     async def status(request):
         return JSONResponse({"provider": args.provider, "model": args.model,
             "source": "server_selected" if args.mcp_url else args.mode,
-            "model_configured": ready, "token": token}, headers={"Cache-Control": "no-store"})
+            "model_configured": ready, "generation": generation.__dict__, "token": token}, headers={"Cache-Control": "no-store"})
 
     async def chat(request):
         if request.headers.get("x-chat-token") != token:
@@ -111,11 +113,12 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                 if model_factory:
                     model = model_factory(request.app.state.client)
                 elif args.provider == "compatible":
-                    model = CompatibleModel(request.app.state.client, args.model, key, instructions, args.base_url)
+                    model = CompatibleModel(request.app.state.client, args.model, key, instructions, args.base_url, generation)
                 elif args.provider == "ollama":
-                    model = OllamaModel(request.app.state.client, args.model, instructions)
+                    model = OllamaModel(request.app.state.client, args.model, instructions, generation)
                 else:
                     model = OpenAIModel(request.app.state.client, args.model, key, instructions)
+                trace.add("run", provider=args.provider, model=args.model, generation=generation.__dict__)
                 chats[sid] = Agent(request.app.state.session, model, trace)
             agent = chats[sid]
             offset = len(agent.trace.events)
@@ -124,7 +127,7 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                     await agent.initialize()
                 answer = await agent.answer(question.strip())
                 return JSONResponse({"session": sid, "answer": answer,
-                    "events": agent.trace.events[offset:]}, headers={"Cache-Control": "no-store"})
+                    "events": agent.trace.events[offset:], "grounding": agent.last_grounding}, headers={"Cache-Control": "no-store"})
             except Exception as exc:
                 # Incomplete provider histories must not be reused after a failed tool round.
                 message = str(exc) if isinstance(exc, AgentError) else "Сбой агента или MCP. Проверьте сервер и подключение."
@@ -151,7 +154,12 @@ def main():
     p.add_argument("--mcp-url")
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--ask-key", action="store_true")
+    add_generation_arguments(p)
     args = p.parse_args()
+    try:
+        generation_from_args(args)
+    except AgentError as exc:
+        p.error(str(exc))
     if not 1 <= args.port <= 65535:
         p.error("port must be 1..65535")
     key = os.environ.get("OPENAI_API_KEY" if args.provider == "openai" else "AI_API_KEY", "").strip()

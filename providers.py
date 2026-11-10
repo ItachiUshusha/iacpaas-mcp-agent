@@ -13,7 +13,7 @@ MAX_CONTEXT_BYTES = 1_000_000
 
 
 async def post_json(client, url, payload, headers=None):
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     if len(body) > MAX_CONTEXT_BYTES:
         raise AgentError("Контекст диалога превысил 1 МБ. Начните новый запуск с более узким вопросом.")
     try:
@@ -44,11 +44,11 @@ class OpenAIModel:
 
     def add_result(self, call, result):
         self.history.append({"type": "function_call_output", "call_id": call.id,
-                             "output": json.dumps(result, ensure_ascii=False)})
+                             "output": json.dumps(result, ensure_ascii=False, sort_keys=True)})
 
     async def step(self, tools):
         definitions = [{"type": "function", "name": t["name"], "description": t.get("description", ""),
-                        "parameters": t["inputSchema"], "strict": False} for t in tools]
+                        "parameters": t["inputSchema"], "strict": False} for t in sorted(tools, key=lambda t: t['name'])]
         result = await post_json(self.client, "https://api.openai.com/v1/responses", {
             "model": self.model, "instructions": self.instructions, "input": self.history,
             "tools": definitions, "parallel_tool_calls": False, "store": False,
@@ -73,22 +73,23 @@ class OpenAIModel:
 
 
 class OllamaModel:
-    def __init__(self, client, model, instructions):
+    def __init__(self, client, model, instructions, generation=None):
         self.client, self.model = client, model
+        self.generation = generation
         self.history = [{"role": "system", "content": instructions}]
 
     def add_user(self, text):
         self.history.append({"role": "user", "content": text})
 
     def add_result(self, call, result):
-        self.history.append({"role": "tool", "tool_name": call.name, "content": json.dumps(result, ensure_ascii=False)})
+        self.history.append({"role": "tool", "tool_name": call.name, "content": json.dumps(result, ensure_ascii=False, sort_keys=True)})
 
     async def step(self, tools):
         definitions = [{"type": "function", "function": {"name": t["name"], "description": t.get("description", ""),
-                        "parameters": t["inputSchema"]}} for t in tools]
+                        "parameters": t["inputSchema"]}} for t in sorted(tools, key=lambda t: t['name'])]
         result = await post_json(self.client, "http://127.0.0.1:11434/api/chat", {
             "model": self.model, "messages": self.history, "tools": definitions, "stream": False,
-            "options": {"num_predict": 4096},
+            "options": {"num_predict": 4096, **({"temperature": 0, "seed": self.generation.seed} if self.generation and self.generation.deterministic else {})},
         })
         message = result.get("message")
         if result.get("done") is not True or not isinstance(message, dict) or message.get("role") != "assistant":
@@ -107,7 +108,10 @@ class OllamaModel:
 
 class CompatibleModel:
     """Chat completions with tool calling, e.g. free models on OpenRouter."""
-    def __init__(self, client, model, key, instructions, base_url):
+    def __init__(self, client, model, key, instructions, base_url, generation=None):
+        self.generation = generation
+        if generation:
+            generation.validate("compatible", model, base_url)
         parsed = urlsplit(base_url)
         if (parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"))) or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise AgentError("Адрес API должен быть HTTPS либо локальным HTTP, без пароля и параметров в URL.")
@@ -120,16 +124,20 @@ class CompatibleModel:
 
     def add_result(self, call, result):
         self.history.append({"role": "tool", "tool_call_id": call.id,
-                             "content": json.dumps(result, ensure_ascii=False)})
+                             "content": json.dumps(result, ensure_ascii=False, sort_keys=True)})
 
     async def step(self, tools):
         definitions = [{"type": "function", "function": {"name": t["name"],
-            "description": t.get("description", ""), "parameters": t["inputSchema"]}} for t in tools]
+            "description": t.get("description", ""), "parameters": t["inputSchema"]}} for t in sorted(tools, key=lambda t: t['name'])]
         payload = {"model": self.model, "messages": self.history, "tools": definitions,
                    "stream": False, "max_tokens": 4096}
+        if self.generation and self.generation.deterministic:
+            payload.update(temperature=0, seed=self.generation.seed, parallel_tool_calls=False)
         if urlsplit(self.url).hostname == "openrouter.ai":
             # Require tool support; never let automatic routing use a paid fallback.
             payload["provider"] = {"require_parameters": True, "max_price": {"prompt": 0, "completion": 0}}
+            if self.generation and self.generation.deterministic:
+                payload["provider"].update(only=[self.generation.model_provider], allow_fallbacks=False)
         result = await post_json(self.client, self.url, payload,
                                  {"Authorization": f"Bearer {self.key}"} if self.key else {})
         choices = result.get("choices")

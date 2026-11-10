@@ -94,7 +94,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             agent = Agent(session, DiscoveryModel(), self.trace)
             await agent.initialize()
             await agent.answer("Найди ресурс")
-        self.assertEqual(offered[0], {"list_inforesources"})
+        self.assertEqual(offered[0], {"list_inforesources", "create_folder", "delete_folder"})
         self.assertIn("count_graph", offered[1])
 
     async def test_clarification_preserves_conversation(self):

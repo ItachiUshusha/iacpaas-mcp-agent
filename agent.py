@@ -15,6 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from agent_core import Agent, AgentError, Trace
 from providers import OpenAIModel, OllamaModel, CompatibleModel
+from generation import add_generation_arguments, generation_from_args
 from smoke import connect
 import iacpaas_client as api
 
@@ -45,11 +46,12 @@ async def connection(args, env):
 
 async def run(args, env, key, trace):
     instructions = (BASE / "agent_instructions.md").read_text(encoding="utf-8")
+    generation = generation_from_args(args)
     async with httpx.AsyncClient(timeout=180, follow_redirects=False, trust_env=args.provider != "ollama") as client:
         if args.provider == "compatible":
-            model = CompatibleModel(client, args.model, key, instructions, args.base_url)
+            model = CompatibleModel(client, args.model, key, instructions, args.base_url, generation)
         else:
-            model = OpenAIModel(client, args.model, key, instructions) if args.provider == "openai" else OllamaModel(client, args.model, instructions)
+            model = OpenAIModel(client, args.model, key, instructions) if args.provider == "openai" else OllamaModel(client, args.model, instructions, generation)
         async with connection(args, env) as session:
             agent = Agent(session, model, trace)
             await agent.initialize()
@@ -74,6 +76,7 @@ def main():
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--mcp-url", help="Connect to an already-running local HTTP server; its mode and login apply")
     parser.add_argument("--question", help="One question instead of interactive chat")
+    add_generation_arguments(parser)
     args = parser.parse_args()
     args.model = args.model or os.environ.get({"openai": "OPENAI_MODEL", "ollama": "OLLAMA_MODEL", "compatible": "AI_MODEL"}[args.provider])
     if not args.model:
@@ -81,6 +84,7 @@ def main():
     key = ""
     trace = None
     try:
+        generation_from_args(args)
         if args.provider in ("openai", "compatible"):
             key_var = "OPENAI_API_KEY" if args.provider == "openai" else "AI_API_KEY"
             key = os.environ.get(key_var, "").strip()
@@ -101,7 +105,7 @@ def main():
             secrets.extend(env.get(k, "") for k in ("IACPAAS_TOKEN", "IACPAAS_API_KEY"))
         trace = Trace(BASE / "data/traces", secrets)
         trace.add("run", provider=args.provider, model=args.model, transport="external_http" if args.mcp_url else args.transport,
-                  mode="server_selected" if args.mcp_url else args.mode, llm_agent=True)
+                  mode="server_selected" if args.mcp_url else args.mode, llm_agent=True, generation=generation_from_args(args).__dict__)
         asyncio.run(run(args, env, key, trace))
         trace.add("run_end", status="completed")
     except (KeyboardInterrupt, EOFError):

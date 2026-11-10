@@ -29,3 +29,10 @@ header,footer{flex-shrink:0}
 .jump-bottom{position:absolute;right:38px;bottom:158px;z-index:2;background:#276a56;color:white;box-shadow:0 3px 12px #142c3b26;font-size:12px;padding:9px 15px;border-radius:22px}
 .jump-bottom[hidden]{display:none}
 @media(max-width:760px){.jump-bottom{right:20px;bottom:145px}}
+
+.grounding,.comparison{border:1px solid #d7e1e7;border-radius:9px;padding:15px 18px;margin-top:16px;background:#f7fafc}
+.grounding p,.comparison p{font-size:12px;color:#526675;line-height:1.6}
+.grounding.uncited,.grounding.invalid_citations{border-color:#e5c69e;background:#fff9ef}
+.evidence-link{display:inline;padding:1px 5px;border-radius:4px;font-size:11px;vertical-align:baseline;background:#e4eee9;color:#25624e}
+.facts{margin-top:16px;background:#f4f7f9;border-color:#dbe3e8}
+.grounding details{overflow-wrap:anywhere}

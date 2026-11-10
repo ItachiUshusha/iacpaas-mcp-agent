@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
 $projectPython = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $projectPython)) { throw 'Run setup.ps1 first.' }
-if ($ClientArguments.Count -eq 0) { throw 'Expected: web, agent, serve, smoke, study, materials, test, or doctor.' }
+if ($ClientArguments.Count -eq 0) { throw 'Expected: web, agent, serve, smoke, study, materials, folders, test, or doctor.' }
 $operation = $ClientArguments[0]
 $remaining = @()
 if ($ClientArguments.Count -gt 1) { $remaining = $ClientArguments[1..($ClientArguments.Count - 1)] }
@@ -15,10 +15,11 @@ switch ($operation) {
     'doctor' { & $projectPython -X utf8 "$PSScriptRoot\doctor.py" @remaining }
     'study' { & $projectPython -X utf8 "$PSScriptRoot\study_materials.py" @remaining }
     'materials' { & $projectPython -X utf8 "$PSScriptRoot\materials_demo.py" @remaining }
+    'folders' { & $projectPython -X utf8 "$PSScriptRoot\folders_demo.py" @remaining }
     'test' {
         Push-Location $PSScriptRoot
         try { & $projectPython -X utf8 -m unittest discover -s tests -v } finally { Pop-Location }
     }
-    default { throw 'Expected: web, agent, serve, smoke, study, materials, test, or doctor.' }
+    default { throw 'Expected: web, agent, serve, smoke, study, materials, folders, test, or doctor.' }
 }
 exit $LASTEXITCODE

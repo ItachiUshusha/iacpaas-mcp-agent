@@ -1,4 +1,4 @@
-"""Transport-independent, read-only IACPaaS adapter."""
+"""Transport-independent IACPaaS adapter."""
 from __future__ import annotations
 
 import json
@@ -110,6 +110,50 @@ class CountReport(Model):
     warnings: list[str]
 
 
+class Evidence(Model):
+    evidence_id: str
+    pointer: str
+    trail: list[str]
+    fields: dict
+    children: list[dict]
+    children_truncated: bool
+
+
+class SearchReport(Model):
+    resource: Resource
+    source: Literal["live_api", "saved_snapshot"]
+    requested_depth: int
+    export_sha256: str
+    complete_graph: Literal[False] = False
+    query: str
+    scanned_nodes: int
+    total_matches: int
+    matches_truncated: bool
+    matches: list[Evidence]
+    warnings: list[str]
+
+
+class ComparisonReport(Model):
+    resource: Resource
+    source: Literal["live_api", "saved_snapshot"]
+    requested_depth: int
+    export_sha256: str
+    complete_graph: Literal[False] = False
+    left: Evidence
+    right: Evidence
+    common: list[dict]
+    left_only: list[str]
+    right_only: list[str]
+    rule: str
+    warnings: list[str]
+
+
+class FolderChange(Model):
+    path: ResourcePath
+    operation: Literal["created", "moved_to_trash"]
+    source: Literal["live_api"] = "live_api"
+
+
 def project_graph(raw: dict, max_nodes: int) -> tuple[Node, Counts]:
     """Preserve occurrences and references; never infer unique vertices from paths."""
     total = links = missing_ids = 0
@@ -169,7 +213,49 @@ class Service:
 
     def list_resources(self, query: str, limit: int) -> Listing:
         found = [r for r in self.catalog if query.casefold() in (r.title + " " + r.path).casefold()]
+        found.sort(key=lambda r: (r.path.casefold(), r.path, r.resource_id))
         return Listing(resources=found[:limit], total_matches=len(found), truncated=len(found) > limit)
+
+    def folder_headers(self):
+        if self.mode != "live":
+            raise Fault("LIVE_REQUIRED", "Операции с каталогами доступны только в live-режиме.", "Запустите сервер с --mode live и войдите в IACPaaS.")
+        try:
+            return self.headers if self.headers is not None else api.auth_headers(interactive=False)
+        except api.ClientError:
+            raise Fault("AUTH_REQUIRED", "Нужна авторизация IACPaaS.", "Войдите в терминале; не передавайте пароль в чате.") from None
+
+    def create_folder(self, parent: str, name: str, description: str = "") -> FolderChange:
+        try:
+            api.folder_path(parent, allow_root=True)
+            api.folder_path(name)
+            if "/" in name or len(name) > 200 or len(description) > 2000:
+                raise api.ClientError("Имя — один компонент до 200 символов; описание — до 2000.")
+            path = api.folder_path(f"{parent}/{name}" if parent else name)
+        except api.ClientError as exc:
+            raise Fault("INVALID_ARGUMENT", str(exc), "Укажите родительскую папку и отдельное имя нового каталога.") from None
+        headers = self.folder_headers()
+        try:
+            api.create_folder(parent, name, description=description, headers=headers)
+        except api.ClientError as exc:
+            raise Fault("UPSTREAM_ERROR", str(exc), "Проверьте папку перед повтором: при сетевом сбое операция могла выполниться.") from None
+        return FolderChange(path=path, operation="created")
+
+    def delete_folder(self, path: str, confirm_path: str) -> FolderChange:
+        try:
+            api.folder_path(path)
+        except api.ClientError as exc:
+            raise Fault("INVALID_ARGUMENT", str(exc), "Нужен точный путь удаляемой папки.") from None
+        if confirm_path != path:
+            raise Fault("CONFIRMATION_REQUIRED", "Подтверждённый путь не совпадает с удаляемым.", "Уточните путь; confirm_path должен точно совпадать с path.")
+        if (path in {"Загрузки", "Корзина", "Мой Фонд"}
+                or any(r.path == path or r.path.startswith(path + "/") for r in self.catalog)):
+            raise Fault("PROTECTED_PATH", "Этот путь защищён от удаления.", "Выберите отдельную учебную папку без настроенных ресурсов.")
+        headers = self.folder_headers()
+        try:
+            api.delete_folder(path, headers=headers)
+        except api.ClientError as exc:
+            raise Fault("UPSTREAM_ERROR", str(exc), "Проверьте фонд и корзину перед повтором; не повторяйте удаление автоматически.") from None
+        return FolderChange(path=path, operation="moved_to_trash")
 
     def read(self, selection: Selection) -> Graph:
         resource = next((r for r in self.catalog if r.path == selection.path), None)
@@ -208,3 +294,35 @@ class Service:
     def count(self, selection: Selection) -> CountReport:
         graph = self.read(selection)
         return CountReport(**graph.model_dump(exclude={"root", "complete_graph"}))
+
+
+    def search_raw(self, path: str, depth: int):
+        resource = next((r for r in self.catalog if r.path == path), None)
+        if resource is None:
+            raise Fault("RESOURCE_NOT_CONFIGURED", "Ресурс не подключён.", "Сначала list_inforesources; каталог не является полным фондом.")
+        if self.mode == "snapshot":
+            if depth != 0:
+                raise Fault("SNAPSHOT_SCOPE", "В snapshot доступен только корень.", "Укажите depth=0 или используйте live.")
+            raw = api.normalize_export(json.loads((BASE / "fixtures/root.json").read_text(encoding="utf-8")))
+        else:
+            headers = self.folder_headers()
+            try:
+                raw = self.exporter(path, depth=depth, start=None, headers=headers)
+            except api.ClientError:
+                raise Fault("UPSTREAM_ERROR", "Не удалось получить поисковый экспорт.", "Проверьте доступ; при превышении 2 МБ уменьшите depth. Не делайте вывод об отсутствии сведений.") from None
+        if str(raw.get("code")) != resource.resource_id or raw.get("title") != resource.title:
+            raise Fault("RESOURCE_MISMATCH", "Ответ не соответствует ресурсу.", "Проверьте каталог и режим снимка.")
+        return resource, raw
+
+    def search(self, path: str, query: str, depth: int = 10, limit: int = 20) -> SearchReport:
+        from retrieval import search_export
+        resource, raw = self.search_raw(path, depth)
+        return search_export(resource, raw, query, depth, limit,
+                             "live_api" if self.mode == "live" else "saved_snapshot")
+
+    def compare_children(self, path: str, left_pointer: str, right_pointer: str,
+                         export_sha256: str, depth: int = 10) -> ComparisonReport:
+        from retrieval import compare_export
+        resource, raw = self.search_raw(path, depth)
+        return compare_export(resource, raw, left_pointer, right_pointer, export_sha256, depth,
+                              "live_api" if self.mode == "live" else "saved_snapshot")
