@@ -51,7 +51,7 @@ async def run(args, env, key, trace):
         if args.provider == "compatible":
             model = CompatibleModel(client, args.model, key, instructions, args.base_url, generation)
         else:
-            model = OpenAIModel(client, args.model, key, instructions) if args.provider == "openai" else OllamaModel(client, args.model, instructions, generation)
+            model = OpenAIModel(client, args.model, key, instructions, generation) if args.provider == "openai" else OllamaModel(client, args.model, instructions, generation)
         async with connection(args, env) as session:
             agent = Agent(session, model, trace)
             await agent.initialize()

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 
@@ -10,6 +12,66 @@ from agent_core import AgentError, Call, Turn
 
 MAX_MODEL_BYTES = 2_000_000
 MAX_CONTEXT_BYTES = 1_000_000
+MODEL_DIAGNOSTIC_DIR = Path(__file__).resolve().parent / "data/model-api-errors"
+
+
+async def save_model_failure(response, url, payload, headers):
+    """Keep a small provider diagnostic locally, without prompts or auth headers."""
+    try:
+        raw = bytearray()
+        truncated = False
+        async for chunk in response.aiter_bytes():
+            remaining = 16_384 - len(raw)
+            raw.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                truncated = True
+                break
+        try:
+            data = json.loads(raw)
+            body_format = "json"
+        except ValueError:
+            data = None
+            body_format = "non_json" if raw else "empty"
+        error = data.get("error", {}) if isinstance(data, dict) else {}
+        if isinstance(error, str):
+            error = {"message": error}
+        if not isinstance(error, dict):
+            error = {}
+        metadata = error.get("metadata")
+        details = {k: error[k] for k in ("code", "type", "param", "message") if isinstance(error.get(k), (str, int))}
+        if isinstance(data, dict):
+            for key in ("code", "type", "message", "detail", "title"):
+                if isinstance(data.get(key), (str, int)):
+                    details.setdefault(key, data[key])
+        if isinstance(metadata, dict):
+            details.update({k: metadata[k] for k in ("provider_name", "raw") if isinstance(metadata.get(k), str)})
+        secrets = [v for v in (headers or {}).values() if isinstance(v, str) and v]
+        secrets += [v[7:] for v in secrets if v.startswith("Bearer ") and len(v) > 7]
+        def clean(value):
+            if isinstance(value, str):
+                for secret in sorted(secrets, key=len, reverse=True):
+                    value = value.replace(secret, "[REDACTED]")
+                return value[:2000]
+            return value
+        report = {"host": urlsplit(url).hostname, "status": response.status_code,
+                  "model": clean(payload.get("model")),
+                  "max_output_tokens": payload.get("max_tokens", payload.get("max_output_tokens", payload.get("options", {}).get("num_predict"))),
+                  "response": {
+                      "format": body_format,
+                      "captured_bytes": len(raw),
+                      "truncated": truncated,
+                      "headers": {name: clean(response.headers[name]) for name in
+                                  ("content-type", "server", "cf-ray", "x-request-id", "retry-after")
+                                  if name in response.headers},
+                  },
+                  "error": {k: clean(v) for k, v in details.items()}}
+        MODEL_DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
+        file = MODEL_DIAGNOSTIC_DIR / ("model-error-" + uuid4().hex + ".json")
+        with file.open("x", encoding="utf-8") as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2)
+        return f" Локальная диагностика: {file.name}"
+    except (OSError, httpx.HTTPError):
+        return ""
 
 
 async def post_json(client, url, payload, headers=None):
@@ -19,24 +81,29 @@ async def post_json(client, url, payload, headers=None):
     try:
         async with client.stream("POST", url, content=body, headers={"Content-Type": "application/json", **(headers or {})}) as response:
             if response.status_code >= 300:
-                raise AgentError(f"Модель: HTTP {response.status_code}. Проверьте доступ, имя модели и лимиты провайдера.")
+                diagnostic = await save_model_failure(response, url, payload, headers)
+                raise AgentError(f"Модель: HTTP {response.status_code}. Провайдер отклонил запрос.{diagnostic}")
             chunks, size = [], 0
             async for chunk in response.aiter_bytes():
                 size += len(chunk)
                 if size > MAX_MODEL_BYTES:
                     raise AgentError("Ответ модели превысил 2 МБ.")
                 chunks.append(chunk)
+    except httpx.HTTPError:
+        raise AgentError("Связь с провайдером модели прервалась. Диалог завершён.") from None
+    try:
         result = json.loads(b"".join(chunks))
         if not isinstance(result, dict):
             raise ValueError
         return result
-    except (httpx.HTTPError, ValueError, UnicodeError):
-        raise AgentError("Не удалось получить JSON от модели. Проверьте подключение и запущенный сервис.") from None
+    except ValueError:
+        raise AgentError("Провайдер модели вернул ответ в неожиданном формате. Диалог завершён.") from None
 
 
 class OpenAIModel:
-    def __init__(self, client, model, key, instructions):
+    def __init__(self, client, model, key, instructions, generation=None):
         self.client, self.model, self.key, self.instructions = client, model, key, instructions
+        self.generation = generation
         self.history = []
 
     def add_user(self, text):
@@ -52,7 +119,7 @@ class OpenAIModel:
         result = await post_json(self.client, "https://api.openai.com/v1/responses", {
             "model": self.model, "instructions": self.instructions, "input": self.history,
             "tools": definitions, "parallel_tool_calls": False, "store": False,
-            "include": ["reasoning.encrypted_content"], "max_output_tokens": 4096,
+            "include": ["reasoning.encrypted_content"], "max_output_tokens": getattr(self.generation, "max_output_tokens", 4096),
         }, {"Authorization": f"Bearer {self.key}"})
         if result.get("status") != "completed" or not isinstance(result.get("output"), list):
             raise AgentError("Модель не завершила ответ. Проверьте лимит вывода и поддержку tool calling.")
@@ -89,7 +156,7 @@ class OllamaModel:
                         "parameters": t["inputSchema"]}} for t in sorted(tools, key=lambda t: t['name'])]
         result = await post_json(self.client, "http://127.0.0.1:11434/api/chat", {
             "model": self.model, "messages": self.history, "tools": definitions, "stream": False,
-            "options": {"num_predict": 4096, **({"temperature": 0, "seed": self.generation.seed} if self.generation and self.generation.deterministic else {})},
+            "options": {"num_predict": getattr(self.generation, "max_output_tokens", 4096), **({"temperature": 0, "seed": self.generation.seed} if self.generation and self.generation.deterministic else {})},
         })
         message = result.get("message")
         if result.get("done") is not True or not isinstance(message, dict) or message.get("role") != "assistant":
@@ -130,7 +197,7 @@ class CompatibleModel:
         definitions = [{"type": "function", "function": {"name": t["name"],
             "description": t.get("description", ""), "parameters": t["inputSchema"]}} for t in sorted(tools, key=lambda t: t['name'])]
         payload = {"model": self.model, "messages": self.history, "tools": definitions,
-                   "stream": False, "max_tokens": 4096}
+                   "stream": False, "max_tokens": getattr(self.generation, "max_output_tokens", 4096)}
         if self.generation and self.generation.deterministic:
             payload.update(temperature=0, seed=self.generation.seed, parallel_tool_calls=False)
         if urlsplit(self.url).hostname == "openrouter.ai":

@@ -6,6 +6,7 @@ import unicodedata
 from domain import ComparisonReport, Evidence, Fault, MAX_RESULT_BYTES, SearchReport
 
 FIELDS = ("id", "name", "value", "meta", "type", "valtype", "link", "link_id", "comment")
+SEARCH_FIELDS = ("name", "value", "meta", "link", "comment")
 WARNINGS = [
     "Проверен только экспорт указанной глубины, не весь фонд. Отсутствие совпадений не доказывает отсутствие сведений в других ресурсах.",
     "Ссылки на другие узлы не развёрнуты. JSON Pointer относится к этому экспорту, а не к параметру start API."
@@ -73,7 +74,7 @@ def search_export(resource, raw, query, depth, limit, source):
     rows, digest = index_export(raw)
     needle = normalize(query)
     matched = [pointer for pointer, (node, _) in rows.items()
-               if any(needle in normalize(node[key]) for key in ("name", "value", "meta", "link")
+               if any(needle in normalize(node[key]) for key in SEARCH_FIELDS
                       if node.get(key) is not None)]
     return bounded(SearchReport(resource=resource, source=source, requested_depth=depth,
         export_sha256=digest, query=query, scanned_nodes=len(rows), total_matches=len(matched),

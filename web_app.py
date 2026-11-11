@@ -101,6 +101,23 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                 if old:
                     old.trace.close()
                 return JSONResponse({"reset": True})
+            if data.get("action") == "list_materials":
+                try:
+                    session = request.app.state.session
+                    await session.initialize()
+                    result = (await session.call_tool(
+                        "list_inforesources", {"query": "материал"}
+                    )).structuredContent
+                    items = result["data"]["resources"] if result.get("ok") else None
+                except Exception:
+                    return JSONResponse({"error": "Не удалось прочитать каталог MCP."}, status_code=502)
+                event = {"event": "tool_call", "name": "list_inforesources",
+                         "arguments": {"query": "материал"}, "result": result}
+                if items is None:
+                    return JSONResponse({"error": "MCP отклонил запрос каталога.", "events": [event]}, status_code=502)
+                lines = [f"- {row['title']} (`{row['path']}`)" for row in items]
+                answer = "Ресурсы о материалах в настроенном каталоге\n\n" + "\n".join(lines) if lines else "В каталоге нет совпадений по слову «материал»."
+                return JSONResponse({"answer": answer, "events": [event]}, headers={"Cache-Control": "no-store"})
             if not ready:
                 return JSONResponse({"error": "API-ключ модели не задан. Перезапустите с --ask-key и введите ключ в терминале."}, status_code=503)
             if sid and sid not in chats:
@@ -117,7 +134,7 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                 elif args.provider == "ollama":
                     model = OllamaModel(request.app.state.client, args.model, instructions, generation)
                 else:
-                    model = OpenAIModel(request.app.state.client, args.model, key, instructions)
+                    model = OpenAIModel(request.app.state.client, args.model, key, instructions, generation)
                 trace.add("run", provider=args.provider, model=args.model, generation=generation.__dict__)
                 chats[sid] = Agent(request.app.state.session, model, trace)
             agent = chats[sid]

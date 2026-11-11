@@ -1,4 +1,7 @@
-"""Read-only readiness check; never prints secrets or submits model requests."""
+"""Check local readiness or test OpenRouter independently of MCP."""
+import argparse
+import asyncio
+import getpass
 import importlib.metadata
 import json
 import os
@@ -7,8 +10,44 @@ import shutil
 
 import httpx
 
+from providers import save_model_failure
+
+
+async def check_openrouter(key):
+    base_url = "https://openrouter.ai/api/v1"
+    headers = {"Authorization": f"Bearer {key}"}
+    payload = {
+        "model": "openrouter/free",
+        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "max_tokens": 128,
+        "stream": False,
+    }
+    success = True
+    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+        for method, endpoint, body in (("GET", "/key", None), ("POST", "/chat/completions", payload)):
+            url = base_url + endpoint
+            try:
+                async with client.stream(method, url, headers=headers, json=body) as response:
+                    diagnostic = ""
+                    if not response.is_success:
+                        success = False
+                        diagnostic = await save_model_failure(response, url, body or {}, headers)
+                    print(f"{method} {endpoint}: HTTP {response.status_code}.{diagnostic}")
+            except httpx.HTTPError as exc:
+                success = False
+                print(f"{method} {endpoint}: сбой соединения ({type(exc).__name__}).")
+    return 0 if success else 1
+
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--openrouter", action="store_true", help="Check the API key and make one free request without MCP tools")
+    args = parser.parse_args()
+    if args.openrouter:
+        key = getpass.getpass("Ключ OpenRouter (ввод скрыт): ").strip()
+        if not key:
+            parser.error("Ключ не введён.")
+        return asyncio.run(check_openrouter(key))
     result = {
         "python_environment": True,
         "mcp_version": importlib.metadata.version("mcp"),
@@ -40,4 +79,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

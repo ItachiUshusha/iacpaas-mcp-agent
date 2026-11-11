@@ -203,12 +203,13 @@ def project_graph(raw: dict, max_nodes: int) -> tuple[Node, Counts]:
 
 
 class Service:
-    def __init__(self, mode="live", headers=None, exporter=None):
+    def __init__(self, mode="live", headers=None, exporter=None, *, fund_session=None):
         if mode not in ("live", "snapshot"):
             raise ValueError("mode must be live or snapshot")
         self.mode = mode
         self.headers = headers
         self.exporter = exporter or api.export_resource
+        self.fund_session = fund_session
         self.catalog = [Resource.model_validate(row) for row in json.loads((BASE / "catalog.json").read_text(encoding="utf-8"))]
 
     def list_resources(self, query: str, limit: int) -> Listing:
@@ -247,14 +248,19 @@ class Service:
             raise Fault("INVALID_ARGUMENT", str(exc), "Нужен точный путь удаляемой папки.") from None
         if confirm_path != path:
             raise Fault("CONFIRMATION_REQUIRED", "Подтверждённый путь не совпадает с удаляемым.", "Уточните путь; confirm_path должен точно совпадать с path.")
-        if (path in {"Загрузки", "Корзина", "Мой Фонд"}
+        if (path == "Загрузки" or path.split("/", 1)[0] == "Корзина"
                 or any(r.path == path or r.path.startswith(path + "/") for r in self.catalog)):
             raise Fault("PROTECTED_PATH", "Этот путь защищён от удаления.", "Выберите отдельную учебную папку без настроенных ресурсов.")
-        headers = self.folder_headers()
+        if self.mode != "live":
+            self.folder_headers()  # Preserve the explicit LIVE_REQUIRED error in snapshot mode.
+        if self.fund_session is None:
+            raise Fault("FUND_LOGIN_REQUIRED", "Для перемещения папки в корзину нужна веб-сессия IACPaaS.",
+                        "Запустите MCP по HTTP с --login --fund-login.")
         try:
-            api.delete_folder(path, headers=headers)
+            self.fund_session.delete_folder(path)
         except api.ClientError as exc:
-            raise Fault("UPSTREAM_ERROR", str(exc), "Проверьте фонд и корзину перед повтором; не повторяйте удаление автоматически.") from None
+            raise Fault("UPSTREAM_ERROR", str(exc),
+                        "Проверьте исходную папку и корзину перед повтором операции.") from None
         return FolderChange(path=path, operation="moved_to_trash")
 
     def read(self, selection: Selection) -> Graph:

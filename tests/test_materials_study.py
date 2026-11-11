@@ -61,6 +61,21 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(json.loads((base / "catalog.json").read_text(encoding="utf-8")), [])
             self.assertTrue(all("error" in r for r in manifest["resources"]))
 
+    def test_connects_exact_nested_resource_path_with_exported_code(self):
+        with tempfile.TemporaryDirectory(dir=BASE) as temp:
+            base = Path(temp)
+            catalog = base / "catalog.json"
+            catalog.write_text("[]", encoding="utf-8")
+            path = "Загрузки/Материалы/Тестовые газы"
+            raw = {"title": "Тестовые газы", "code": "verified-code", "type": "КОРЕНЬ"}
+            with patch.object(study, "BASE", base), patch.object(study.api, "export_resource", return_value=raw) as export:
+                manifest = study.collect({}, 10, base, resource_path=path)
+            self.assertEqual([call.args[0] for call in export.call_args_list], [path, path])
+            self.assertEqual(manifest["resources"][0]["fragment_depth"], 10)
+            self.assertEqual(json.loads(catalog.read_text(encoding="utf-8")), [
+                {"title": "Тестовые газы", "resource_id": "verified-code", "path": path}
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()

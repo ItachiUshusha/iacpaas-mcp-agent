@@ -68,12 +68,15 @@ def generate_notes(manifest, directory):
     (directory / "FACTS.md").write_text("\n".join(lines), encoding="utf-8")
 
 
-def collect(headers, depth, directory, targets=None):
+def collect(headers, depth, directory, targets=None, *, resource_path=None):
     manifest = {"collected_at_utc": datetime.now(timezone.utc).isoformat(), "source": "live_api", "resources": []}
-    catalog = json.loads((BASE / "catalog.json").read_text(encoding="utf-8"))
+    catalog_path = BASE / "catalog.json"
+    verified = {}
+    if resource_path is not None:
+        targets = [("selected-resource", resource_path.rsplit("/", 1)[-1], "selected")]
     for slug, title, role in (TARGETS if targets is None else targets):
         print("Чтение: " + title, flush=True)
-        item = {"title": title, "role": role, "path": "Загрузки/" + title}
+        item = {"title": title, "role": role, "path": resource_path or "Загрузки/" + title}
         manifest["resources"].append(item)
         try:
             root = api.export_resource(item["path"], depth=0, headers=headers)
@@ -83,7 +86,7 @@ def collect(headers, depth, directory, targets=None):
             item["root_file"] = slug + "-root.json"
             save_json(directory / item["root_file"], root)
             row = {"resource_id": item["resource_id"], "title": title, "path": item["path"]}
-            catalog = [r for r in catalog if r["path"] != item["path"]] + [row]
+            verified[item["path"]] = row
             try:
                 fragment = api.export_resource(item["path"], depth=depth, headers=headers)
                 if str(fragment.get("code")) != item["resource_id"] or fragment.get("title") != title:
@@ -103,8 +106,19 @@ def collect(headers, depth, directory, targets=None):
     generate_notes(manifest, directory)
     # Only identities confirmed by authenticated exports enter the MCP catalog.
     # Preserve the original catalog for rollback; never guess resource codes.
-    save_json(directory / "catalog-before.json", json.loads((BASE / "catalog.json").read_text(encoding="utf-8")))
-    (BASE / "catalog.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if verified:
+        current_catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog_by_path = {row["path"]: row for row in current_catalog}
+        catalog_by_path.update(verified)
+        updated_catalog = list(catalog_by_path.values())
+        if updated_catalog != current_catalog:
+            save_json(directory / "catalog-before.json", current_catalog)
+            pending = catalog_path.with_name(f".catalog-{uuid4().hex}.tmp")
+            try:
+                save_json(pending, updated_catalog)
+                pending.replace(catalog_path)
+            finally:
+                pending.unlink(missing_ok=True)
     return manifest
 
 
@@ -112,17 +126,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--depth", type=int, choices=range(1, 11), default=3)
     parser.add_argument("--verify-mcp", action="store_true", help="After collection, verify registered resources through stdio and HTTP with the same login")
-    parser.add_argument("--gases", action="store_true", help="Collect chemical substances and metalwire materials to locate gas records")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--gases", action="store_true", help="Collect chemical substances and metalwire materials to locate gas records")
+    selection.add_argument("--resource-path", help="Verify and connect an exact resource path inside My Fund")
     args = parser.parse_args()
-    if args.gases and args.verify_mcp:
-        parser.error("--verify-mcp applies to the original material properties study, not --gases")
+    if (args.gases or args.resource_path is not None) and args.verify_mcp:
+        parser.error("--verify-mcp applies only to the original material properties study")
     try:
+        resource_path = api.folder_path(args.resource_path) if args.resource_path is not None else None
+        targets = [("chemicals", "База химических элементов и веществ", "data"),
+                   ("metalwire", "База металлопроволочных материалов", "data")] if args.gases else None
         headers = api.auth_headers()
         directory = BASE / "data/materials-study" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:6])
         directory.mkdir(parents=True)
-        targets = [("chemicals", "База химических элементов и веществ", "data"),
-                   ("metalwire", "База металлопроволочных материалов", "data")] if args.gases else None
-        manifest = collect(headers, args.depth, directory, targets)
+        manifest = collect(headers, args.depth, directory, targets, resource_path=resource_path)
         complete = all(r.get("fragment_file") for r in manifest["resources"])
         print("\nРезультаты: " + str(directory), flush=True)
         print("Разбор дерева: " + str(directory / "FACTS.md"), flush=True)

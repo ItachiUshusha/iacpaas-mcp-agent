@@ -55,6 +55,14 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(len(audit["sources"]), 2)
         self.assertIn("не автоматическая", audit["note"])
 
+    def test_search_can_find_impurities_recorded_only_in_a_comment(self):
+        raw = fixture()
+        raw["successors"][0]["comment"] = "Примеси по тестовым данным: водород и аргон."
+        result = search_export(RESOURCE, raw, "АРГОН", 10, 20, "live_api")
+        self.assertEqual(result.total_matches, 1)
+        self.assertEqual(result.matches[0].trail, ["Тестовые газы", "Группа А"])
+        self.assertIn("водород и аргон", result.matches[0].fields["comment"])
+
     def test_stale_pointers_missing_empty_and_linked_lists_fail(self):
         raw = fixture()
         _, digest = index_export(raw)

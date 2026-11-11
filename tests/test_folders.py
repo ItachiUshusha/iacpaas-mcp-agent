@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
+import httpx
 import jsonschema
 
 from agent import child_environment
@@ -13,7 +14,7 @@ from smoke import connect
 
 
 class FolderTests(unittest.TestCase):
-    def test_exact_http_methods_payloads_and_no_permanent_delete(self):
+    def test_creation_payload_and_no_network_without_fund_login(self):
         captured = []
         def opened(request, timeout):
             captured.append(request)
@@ -25,11 +26,41 @@ class FolderTests(unittest.TestCase):
         with patch("iacpaas_client.build_opener") as opener:
             opener.return_value.open.side_effect = opened
             api.create_folder("Загрузки", "Учебная папка", description="Тест", headers={"X-API-KEY": "test-only"})
-            api.delete_folder("Загрузки/Учебная папка", headers={"X-API-KEY": "test-only"})
-        self.assertEqual([r.get_method() for r in captured], ["POST", "DELETE"])
+            result = respond(lambda: Service("live").delete_folder("Загрузки/Учебная папка", "Загрузки/Учебная папка"))
+            self.assertTrue(result.isError)
+            self.assertEqual(result.structuredContent["error"]["code"], "FUND_LOGIN_REQUIRED")
+        self.assertEqual([r.get_method() for r in captured], ["POST"])
         self.assertTrue(captured[0].full_url.endswith("/api/storage-unit/folder/create"))
         self.assertEqual(json.loads(captured[0].data), {"path": "Загрузки", "name": "Учебная папка", "description": "Тест"})
-        self.assertEqual(json.loads(captured[1].data), {"path": "Загрузки/Учебная папка", "mode": "trashIR"})
+
+    def test_recycle_uses_authenticated_fund_session_and_only_exact_folder(self):
+        path = "Загрузки/Тест"
+        items = [{"path": path, "title": "Тест", "nodeType": "folder"},
+                 {"path": path + "-другая", "title": "Тест-другая", "nodeType": "folder"}]
+        deleted = []
+
+        def handler(request):
+            if request.url.path == "/login":
+                return httpx.Response(302, headers={"Location": "/", "Set-Cookie": "SESSION=test-session; Secure; Path=/"})
+            self.assertEqual(request.headers.get("cookie"), "SESSION=test-session")
+            if request.url.path == "/fund/structure":
+                self.assertEqual(request.url.params["my"], "true")
+                return httpx.Response(200, json={"success": True, "list": items if request.url.params["path"] == "Загрузки" else []})
+            self.assertEqual((request.method, request.url.path), ("POST", "/fund/deleteItem"))
+            deleted.append(json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+
+        with httpx.Client(transport=httpx.MockTransport(handler), base_url=api.BASE_URL) as client:
+            fund = api.FundSession(client)
+            fund.login("test-user", "test-password")
+            service = Service("live", {}, fund_session=fund)
+            result = service.delete_folder(path, path)
+            self.assertEqual(result.operation, "moved_to_trash")
+            items[0]["nodeType"] = "storageUnit"
+            refusal = respond(lambda: service.delete_folder(path, path))
+            self.assertTrue(refusal.isError)
+        self.assertEqual(deleted, [{"my": True, "recycle": True,
+                                    "selected": [{"path": path, "title": "Тест", "nodeType": "folder"}]}])
 
     def test_only_explicit_success_is_accepted_and_no_retry(self):
         for body in ({}, {"success": False}, {"success": True, "error": "private body"},
@@ -45,7 +76,6 @@ class FolderTests(unittest.TestCase):
             result = Service("live", {}).create_folder("", "Учебная папка")
             self.assertEqual(result.path, "Учебная папка")
             self.assertEqual(result.operation, "created")
-            self.assertEqual(Service("live", {}).delete_folder(result.path, result.path).operation, "moved_to_trash")
 
     def test_invalid_paths_fail_before_network(self):
         invalid = ["", "/", "/test", "a/", "a//b", "a/../b", "a/./b", " a", "a /b",

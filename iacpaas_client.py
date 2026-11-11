@@ -14,9 +14,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import httpx
+
 BASE_URL = "https://iacpaas.dvo.ru"
 TIMEOUT = 40
 MAX_BYTES = 2_000_000
+FOLDER_DIAGNOSTIC_DIR = Path(__file__).resolve().parent / "data/folder-api-errors"
+FOLDER_ENDPOINTS = {"/api/storage-unit/folder/create"}
 
 
 class ClientError(Exception):
@@ -92,6 +96,33 @@ class NoRedirect(HTTPRedirectHandler):
         raise ClientError("Сервер перенаправил запрос. Адрес API нужно проверить.")
 
 
+def folder_failure_diagnostic(endpoint, result, headers, http_status=None):
+    """Keep bounded error details locally; never include request headers or credentials."""
+    if endpoint not in FOLDER_ENDPOINTS or not isinstance(result, dict):
+        return ""
+    values = [v for v in (headers or {}).values() if isinstance(v, str) and v]
+    values += [v[7:] for v in values if v.startswith("Bearer ")]
+    selected = {k: result[k] for k in ("success", "error", "explanation", "explanationSafe", "platformUnavailable", "code") if k in result}
+    def clean(value):
+        if isinstance(value, str):
+            for secret in sorted(values, key=len, reverse=True):
+                value = value.replace(secret, "[REDACTED]")
+            return value[:8000]
+        if isinstance(value, dict):
+            return {k: clean(v) for k, v in redact_export(value).items()}
+        if isinstance(value, list):
+            return [clean(v) for v in value[:20]]
+        return value
+    try:
+        FOLDER_DIAGNOSTIC_DIR.mkdir(parents=True, exist_ok=True)
+        target = FOLDER_DIAGNOSTIC_DIR / ("folder-error-" + uuid4().hex + ".json")
+        with target.open("x", encoding="utf-8") as stream:
+            json.dump({"endpoint": endpoint, "http_status": http_status, "response": clean(selected)}, stream, ensure_ascii=False, indent=2)
+        return " Локальная диагностика: " + target.name
+    except OSError:
+        return " Локальную диагностику сохранить не удалось."
+
+
 def request_json(endpoint, *, headers=None, payload=None, query=None, method=None):
     url = BASE_URL + endpoint
     if query:
@@ -113,7 +144,15 @@ def request_json(endpoint, *, headers=None, payload=None, query=None, method=Non
             404: "Ресурс либо адрес API не найден.",
             429: "Слишком много запросов. Повторите позже.",
         }
-        raise ClientError(f"HTTP {exc.code}. " + messages.get(exc.code, "Ошибка сервера IACPaaS.")) from None
+        diagnostic = ""
+        if endpoint in FOLDER_ENDPOINTS:
+            try:
+                raw_error = exc.read(MAX_BYTES + 1)
+                if len(raw_error) <= MAX_BYTES:
+                    diagnostic = folder_failure_diagnostic(endpoint, json.loads(raw_error.decode("utf-8-sig")), headers, exc.code)
+            except (OSError, ValueError, UnicodeError):
+                pass
+        raise ClientError(f"HTTP {exc.code}. " + messages.get(exc.code, "Ошибка сервера IACPaaS.") + diagnostic) from None
     except (URLError, TimeoutError, socket.timeout):
         raise ClientError("Не удалось подключиться к IACPaaS. Проверьте сеть и разрешение на сетевой доступ.") from None
     if len(raw) > MAX_BYTES:
@@ -125,7 +164,8 @@ def request_json(endpoint, *, headers=None, payload=None, query=None, method=Non
     if not isinstance(result, dict):
         raise ClientError("Сервер вернул неожиданный формат JSON.")
     if result.get("success") is False or result.get("error") or result.get("platformUnavailable") is True:
-        raise ClientError("IACPaaS сообщил об ошибке. Проверьте права доступа и путь ресурса в «Моём Фонде».")
+        diagnostic = folder_failure_diagnostic(endpoint, result, headers)
+        raise ClientError("IACPaaS сообщил об ошибке. Проверьте права доступа и путь ресурса в «Моём Фонде»." + diagnostic)
     return result
 
 
@@ -138,14 +178,24 @@ def auth_headers(*, interactive=True):
         return {"X-API-KEY": api_key}
     if token:
         return {"Authorization": f"Bearer {token}"}
-    if not interactive or not sys.stdin.isatty():
+    if not interactive:
         raise ClientError("Запустите export в обычном терминале для входа либо задайте IACPAAS_API_KEY/IACPAAS_TOKEN.")
+    return signin_headers(*read_credentials())
+
+
+def read_credentials():
+    if not sys.stdin.isatty():
+        raise ClientError("Для входа запустите команду в обычном терминале.")
     username = input("Логин IACPaaS: ").strip()
     if not username:
         raise ClientError("Логин не указан.")
     password = getpass.getpass("Пароль IACPaaS (ввод скрыт): ")
     if not password:
         raise ClientError("Пароль не указан.")
+    return username, password
+
+
+def signin_headers(username, password):
     response = request_json("/api/signin", payload={"username": username, "password": password})
     token = response.get("accessToken")
     if not isinstance(token, str) or not token.strip():
@@ -262,12 +312,64 @@ def create_folder(parent, name, *, description="", headers=None):
     require_mutation_success(result)
 
 
-def delete_folder(path, *, headers=None):
-    """Use the documented fund deletion API, always moving to trash."""
-    folder_path(path)
-    result = request_json("/api/data/delete", method="DELETE", headers=headers,
-                          payload={"path": path, "mode": "trashIR"})
-    require_mutation_success(result)
+class FundSession:
+    """Use the My Fund web session for operations exposed by its folder UI."""
+
+    def __init__(self, client):
+        self.client = client
+
+    def login(self, username, password):
+        try:
+            response = self.client.post("/login", data={"username": username, "password": password})
+        except httpx.HTTPError:
+            raise ClientError("Не удалось подключиться к веб-входу IACPaaS.") from None
+        if response.status_code >= 400:
+            raise ClientError(f"Веб-вход IACPaaS отклонён (HTTP {response.status_code}).")
+        self.list_items("")
+
+    def request(self, method, endpoint, *, params, payload=None):
+        try:
+            with self.client.stream(method, endpoint, params=params, json=payload,
+                                    headers={"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}) as response:
+                if response.status_code in (401, 403) or response.is_redirect:
+                    raise ClientError("Проверьте веб-вход и права в «Моём Фонде».")
+                if not response.is_success:
+                    raise ClientError(f"«Мой Фонд» вернул HTTP {response.status_code}.")
+                raw = bytearray()
+                for chunk in response.iter_bytes():
+                    if len(raw) + len(chunk) > MAX_BYTES:
+                        raise ClientError("Ответ «Моего Фонда» превысил 2 МБ.")
+                    raw.extend(chunk)
+            result = json.loads(raw)
+        except httpx.HTTPError:
+            raise ClientError("Связь с «Моим Фондом» прервалась.") from None
+        except ValueError:
+            raise ClientError("«Мой Фонд» вернул ответ в неожиданном формате.") from None
+        if not isinstance(result, dict) or result.get("success") is not True or result.get("error") or result.get("platformUnavailable"):
+            raise ClientError("«Мой Фонд» отклонил запрос. Проверьте веб-вход, путь и права доступа.")
+        return result
+
+    def list_items(self, parent):
+        result = self.request("GET", "/fund/structure",
+                              params={"id": 0, "path": parent, "my": "true", "tz": "UTC+0"})
+        items = result.get("list")
+        if items is None:
+            return []
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise ClientError("Не удалось распознать список объектов «Моего Фонда».")
+        return items
+
+    def delete_folder(self, path):
+        parent, _, name = path.rpartition("/")
+        matches = [item for item in self.list_items(parent) if item.get("path") in (path, "/" + path)]
+        if len(matches) != 1 or matches[0].get("nodeType") != "folder" or matches[0].get("title") != name:
+            raise ClientError("По точному пути не найдена однозначная папка в «Моём Фонде».")
+        folder = matches[0]
+        selected = {key: folder[key] for key in ("path", "nodeType", "title")}
+        if folder.get("id"):
+            selected["id"] = str(folder["id"])
+        self.request("POST", "/fund/deleteItem", params={"tz": "UTC+0"},
+                     payload={"selected": [selected], "my": True, "recycle": True})
 
 
 if __name__ == "__main__":

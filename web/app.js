@@ -66,18 +66,21 @@ async function status(){
   }catch{$('#status').textContent='Сервер недоступен. Проверьте терминал.';}
 }
 
-async function send(question){
+async function send(question,action=''){
   if(busy||!question.trim())return;
   busy=true;$('#send').disabled=true;$('#reset').disabled=true;
-  message('user',question);$('#question').value='';const answer=message('assistant','Модель обрабатывает запрос…');
+  message('user',question);$('#question').value='';
+  const answer=message('assistant',action==='list_materials'?'Читаю каталог MCP…':'Модель обрабатывает запрос…');
   const waitingTop=history.scrollTop;
   let followReply=true,preservedTop=waitingTop;
   try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Chat-Token':token},body:JSON.stringify({session,question})});
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json','X-Chat-Token':token},body:JSON.stringify({session,question,action})});
     const data=await r.json();if(data.session)session=data.session;if(data.reset)session='';
     preservedTop=history.scrollTop;followReply=Math.abs(preservedTop-waitingTop)<8;
     renderChatMarkdown(answer.querySelector('.content'),data.answer||data.error||'Не удалось получить ответ.');
-    if(!r.ok)answer.classList.add('error');grounding(answer,data.grounding);comparison(answer,data.events);facts(answer,data.events);events(answer,data.events);
+    if(!r.ok)answer.classList.add('error');
+    grounding(answer,data.grounding,data.events);
+    comparison(answer,data.events);facts(answer,data.events);events(answer,data.events);
   }catch{
     answer.querySelector('.content').textContent='Соединение прервано. Ответ не подтверждён; начните новый диалог перед повтором.';answer.classList.add('error');
   }finally{
@@ -90,6 +93,8 @@ async function send(question){
 $('#form').addEventListener('submit',e=>{e.preventDefault();send($('#question').value);});
 $('#question').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send($('#question').value);}});
 document.querySelectorAll('[data-question]').forEach(b=>b.addEventListener('click',()=>send(b.dataset.question)));
+document.querySelectorAll('[data-catalog]').forEach(button=>button.addEventListener('click',()=>
+  send('Какие ресурсы о материалах есть в настроенном каталоге?','list_materials')));
 $('#reset').addEventListener('click',async()=>{
   if(busy)return;
   try{
@@ -99,8 +104,13 @@ $('#reset').addEventListener('click',async()=>{
 });
 status();
 
-function grounding(el,audit){
+function grounding(el,audit,items){
   if(!audit)return;
+  const calls=(items||[]).filter(e=>e.event==='tool_call');
+  const folderOperations={create_folder:'created',delete_folder:'moved_to_trash'};
+  const onlyConfirmedFolderChanges=calls.length>0&&calls.every(e=>
+    e.result?.ok&&folderOperations[e.name]&&e.result.data?.operation===folderOperations[e.name]);
+  if(audit.status==='uncited'&&onlyConfirmedFolderChanges)return;
   const panel=document.createElement('section');panel.className='grounding '+audit.status;
   const title=document.createElement('strong');
   title.textContent=audit.status==='cited'?'ССЫЛКИ НА ЗАПИСИ ПРОВЕРЕНЫ':'ВЫВОД НЕ ПОДТВЕРЖДЁН ССЫЛКАМИ';

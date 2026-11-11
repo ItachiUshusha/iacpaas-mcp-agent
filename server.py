@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Annotated, Callable
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -78,7 +79,7 @@ def create_server(service: Service, port=8765) -> FastMCP:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True,
                                             idempotentHint=False, openWorldHint=True))
     async def delete_folder(path: ResourcePath, confirm_path: ResourcePath) -> Annotated[CallToolResult, Result[FolderChange]]:
-        """Move the user-specified folder and its contents to IACPaaS trash via trashIR, live only. Require explicit user authorization for the exact path; copy it into confirm_path. No permanent deletion. Catalog resources and their parents are protected. The local catalog is not a folder listing: never infer a folder path from it or retry a failed delete automatically."""
+        """Move a folder from My Fund to the IACPaaS recycle bin. Live HTTP server with --login --fund-login required. Call only after the user explicitly requests deletion and gives the exact folder path. confirm_path must equal path. Never retry automatically."""
         return await asyncio.to_thread(respond, lambda: service.delete_folder(path, confirm_path))
 
     @server.tool(annotations=read)
@@ -88,7 +89,7 @@ def create_server(service: Service, port=8765) -> FastMCP:
         depth: Annotated[int, Field(ge=0, le=10, strict=True)] = 10,
         limit: Annotated[int, Field(ge=1, le=30, strict=True)] = 20,
     ) -> Annotated[CallToolResult, Result[SearchReport]]:
-        """Search INSIDE a configured resource's bounded export, unlike list_inforesources which searches titles only. Query is a literal case-insensitive substring in name/value/meta/link; try one term or stem at a time. Returns actual node fields, trails, JSON pointers and evidence IDs for citations. At most 2 MB upstream and 20000 scanned nodes; depth 0..10. No match NEVER proves global absence. Snapshot supports only depth=0."""
+        """Search INSIDE a configured resource's bounded export. Query is a literal case-insensitive substring in name/value/meta/link/comment; try one term, formula or stem at a time. Returns node fields, trails, JSON pointers and evidence IDs. At most 2 MB upstream and 20000 scanned nodes; depth 0..10. An empty result only applies to this export and term. Snapshot supports only depth=0."""
         return await asyncio.to_thread(respond, lambda: service.search(path, query, depth, limit))
 
     @server.tool(annotations=read)
@@ -111,22 +112,36 @@ def main():
     parser.add_argument("--mode", choices=["live", "snapshot"], default="live")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--login", action="store_true", help="Interactive login before HTTP startup; credentials remain in memory")
+    parser.add_argument("--fund-login", action="store_true", help="Also log in to My Fund to enable folder removal")
     parser.add_argument("--schemas", action="store_true", help="Print tool schemas without starting server")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be 1..65535")
     if args.login and (args.transport != "http" or args.mode != "live" or args.schemas):
         parser.error("--login requires --transport http --mode live")
-    try:
-        headers = api.auth_headers() if args.login else None
-    except api.ClientError as exc:
-        parser.exit(1, str(exc) + "\n")
-    server = create_server(Service(args.mode, headers), args.port)
-    if args.schemas:
-        schemas = asyncio.run(server.list_tools())
-        print(json.dumps([t.model_dump(mode="json") for t in sorted(schemas, key=lambda t: t.name)], ensure_ascii=False, indent=2))
-    else:
-        server.run(transport="stdio" if args.transport == "stdio" else "streamable-http")
+    if args.fund_login and not args.login:
+        parser.error("--fund-login requires --login")
+    with httpx.Client(base_url=api.BASE_URL, timeout=api.TIMEOUT, follow_redirects=False) as web_client:
+        fund_session = api.FundSession(web_client) if args.fund_login else None
+        try:
+            if fund_session:
+                username, password = api.read_credentials()
+                try:
+                    headers = api.signin_headers(username, password)
+                    fund_session.login(username, password)
+                finally:
+                    del username, password
+                print("Вход в «Мой Фонд» подтверждён.", flush=True)
+            else:
+                headers = api.auth_headers() if args.login else None
+        except api.ClientError as exc:
+            parser.exit(1, str(exc) + "\n")
+        server = create_server(Service(args.mode, headers, fund_session=fund_session), args.port)
+        if args.schemas:
+            schemas = asyncio.run(server.list_tools())
+            print(json.dumps([t.model_dump(mode="json") for t in sorted(schemas, key=lambda t: t.name)], ensure_ascii=False, indent=2))
+        else:
+            server.run(transport="stdio" if args.transport == "stdio" else "streamable-http")
 
 
 if __name__ == "__main__":

@@ -83,8 +83,6 @@ class Agent:
             expected_read = tool.name in READ_TOOLS | SEARCH_TOOLS
             if not tool.annotations or tool.annotations.readOnlyHint is not expected_read:
                 raise AgentError("Аннотации MCP не соответствуют политике инструмента.")
-            if tool.name == "delete_folder" and tool.annotations.destructiveHint is not True:
-                raise AgentError("Сервер не пометил удаление как destructive.")
             item = tool.model_dump(mode="json")
             item["inputSchema"]["additionalProperties"] = False
             self.tools[tool.name] = item

@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -7,11 +9,30 @@ import httpx
 from agent_core import AgentError
 from generation import Generation
 from providers import CompatibleModel, OllamaModel
-from domain import Service, Selection
+from domain import BASE, Service, Selection
 from server import respond
 
 
 class GenerationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_output_cap_and_local_http_failure_diagnostic(self):
+        def reject(request):
+            body = json.loads(request.content)
+            self.assertEqual(body["max_tokens"], 2048)
+            return httpx.Response(400, json={"error": {"code": 400, "message": "Provider detail: Bearer demo-private-key", "metadata": {"provider_name": "Example", "raw": "Unsupported request parameter"}}})
+        with tempfile.TemporaryDirectory(dir=BASE) as tmp, patch("providers.MODEL_DIAGNOSTIC_DIR", Path(tmp)):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(reject)) as client:
+                model = CompatibleModel(client, "openrouter/free", "demo-private-key", "rules", "https://openrouter.ai/api/v1", Generation(max_output_tokens=2048))
+                model.add_user("Private user question")
+                with self.assertRaisesRegex(AgentError, "HTTP 400") as error:
+                    await model.step([])
+            self.assertNotIn("Provider detail", str(error.exception))
+            file = next(Path(tmp).glob("model-error-*.json"))
+            contents = file.read_text(encoding="utf-8")
+            self.assertNotIn("demo-private-key", contents)
+            self.assertNotIn("Private user question", contents)
+            self.assertEqual(json.loads(contents)["error"]["raw"], "Unsupported request parameter")
+            self.assertIn(file.name, str(error.exception))
+
     async def test_ollama_seed_and_identical_fresh_requests(self):
         bodies = []
         def handler(request):
