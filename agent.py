@@ -15,7 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from agent_core import Agent, AgentError, Trace
 from providers import OpenAIModel, OllamaModel, CompatibleModel
-from generation import add_generation_arguments, generation_from_args
+from generation import ModelReplay, add_generation_arguments, generation_from_args
 from smoke import connect
 import iacpaas_client as api
 
@@ -35,9 +35,9 @@ async def connection(args, env):
         parsed = urlsplit(args.mcp_url)
         if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost") or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise AgentError("--mcp-url должен быть локальным HTTP-адресом без секретов, например http://127.0.0.1:8765/mcp.")
-        async with httpx.AsyncClient(trust_env=False, timeout=60) as client:
+        async with httpx.AsyncClient(trust_env=False, timeout=180) as client:
             async with streamable_http_client(args.mcp_url, http_client=client) as (read, write, _):
-                async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=60)) as session:
+                async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=180)) as session:
                     yield session
     else:
         async with connect(args.transport, args.mode, env) as session:
@@ -53,7 +53,7 @@ async def run(args, env, key, trace):
         else:
             model = OpenAIModel(client, args.model, key, instructions, generation) if args.provider == "openai" else OllamaModel(client, args.model, instructions, generation)
         async with connection(args, env) as session:
-            agent = Agent(session, model, trace)
+            agent = Agent(session, model, trace, replay=ModelReplay() if generation.deterministic else None)
             await agent.initialize()
             if args.question:
                 print(await agent.answer(args.question))

@@ -109,6 +109,9 @@ class OpenAIModel:
     def add_user(self, text):
         self.history.append({"role": "user", "content": text})
 
+    def add_assistant(self, text):
+        self.history.append({"role": "assistant", "content": text})
+
     def add_result(self, call, result):
         self.history.append({"type": "function_call_output", "call_id": call.id,
                              "output": json.dumps(result, ensure_ascii=False, sort_keys=True)})
@@ -147,6 +150,9 @@ class OllamaModel:
 
     def add_user(self, text):
         self.history.append({"role": "user", "content": text})
+
+    def add_assistant(self, text):
+        self.history.append({"role": "assistant", "content": text})
 
     def add_result(self, call, result):
         self.history.append({"role": "tool", "tool_name": call.name, "content": json.dumps(result, ensure_ascii=False, sort_keys=True)})
@@ -189,6 +195,9 @@ class CompatibleModel:
     def add_user(self, text):
         self.history.append({"role": "user", "content": text})
 
+    def add_assistant(self, text):
+        self.history.append({"role": "assistant", "content": text})
+
     def add_result(self, call, result):
         self.history.append({"role": "tool", "tool_call_id": call.id,
                              "content": json.dumps(result, ensure_ascii=False, sort_keys=True)})
@@ -198,9 +207,14 @@ class CompatibleModel:
             "description": t.get("description", ""), "parameters": t["inputSchema"]}} for t in sorted(tools, key=lambda t: t['name'])]
         payload = {"model": self.model, "messages": self.history, "tools": definitions,
                    "stream": False, "max_tokens": getattr(self.generation, "max_output_tokens", 4096)}
+        is_openrouter = urlsplit(self.url).hostname == "openrouter.ai"
         if self.generation and self.generation.deterministic:
-            payload.update(temperature=0, seed=self.generation.seed, parallel_tool_calls=False)
-        if urlsplit(self.url).hostname == "openrouter.ai":
+            payload.update(temperature=0, seed=self.generation.seed)
+            # OpenRouter filters endpoints by supported parameters. Gemma's
+            # Google AI Studio endpoint does not advertise parallel_tool_calls.
+            if not is_openrouter:
+                payload["parallel_tool_calls"] = False
+        if is_openrouter:
             # Require tool support; never let automatic routing use a paid fallback.
             payload["provider"] = {"require_parameters": True, "max_price": {"prompt": 0, "completion": 0}}
             if self.generation and self.generation.deterministic:

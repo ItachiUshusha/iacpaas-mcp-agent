@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 from answer_evidence import audit_answer, collect_evidence
 from domain import Fault, Resource, Service
-from retrieval import search_export, compare_export, index_export
+from gas_composition import analyze_gas_export
+from retrieval import search_export, compare_export, index_export, rank_export
 from agent import child_environment
 from smoke import connect
 
@@ -28,6 +29,60 @@ RIGHT = "/successors/1/successors/0"
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_gas_analysis_uses_nested_components_and_preserves_joint_limits(self):
+        def node(meta, *children, **fields):
+            return dict(meta=meta, successors=list(children), **fields)
+
+        def quantity(bound, percent):
+            return [node("%", value="%"), node(bound, node("Числовое значение", value=percent))]
+
+        def record(name, symbol, minimum, impurity):
+            return node("Газ", node("Химическое обозначение", value=symbol),
+                        node("Объемные доли компонентов",
+                             node("Компонент", node("Химический элемент", *quantity("Не менее", minimum), name=symbol), name="1"),
+                             node("Компонент", impurity, name="2")), name=name)
+
+        combined = node("Совокупность химических веществ", node("Химическое обозначение", value="X"),
+                        node("Химическое обозначение", value="Y"), node("Содержание", *quantity("Не более", 0.001)))
+        single = node("Химический элемент", *quantity("Не более", 0.02), name="X")
+        raw = fixture()
+        raw["successors"] = [node("Класс газов", record("Марка Б", "Ar", 99.9, combined),
+                                  record("Марка А", "Ar", 99.99, combined), name="Газы на основе Аргона"),
+                             node("Класс газов", record("Марка В", "H", 99.8, single), name="Газы на основе Водорода")]
+
+        ranking = analyze_gas_export(RESOURCE, raw, "Ar", "", 10).groups[0].records
+        self.assertEqual([row.record.trail[-1] for row in ranking], ["Марка А", "Марка Б"])
+        self.assertEqual((ranking[0].shares[0].relation, ranking[0].shares[0].percent), ("≥", "99.99"))
+        self.assertEqual((ranking[0].shares[1].components, ranking[0].shares[1].relation), (["X", "Y"], "≤"))
+        compared = analyze_gas_export(RESOURCE, raw, "Ar", "H", 10)
+        self.assertEqual(compared, analyze_gas_export(RESOURCE, raw, "Ar", "H", 10))
+        self.assertEqual([item.component for item in compared.common_impurities], ["X"])
+        match = compared.common_impurities[0]
+        sources = {e["evidence_id"] for e in collect_evidence(compared.model_dump())}
+        self.assertNotEqual(match.left.evidence_id, match.right.evidence_id)
+        self.assertTrue({match.left.evidence_id, match.right.evidence_id} <= sources)
+
+    def test_rank_live_percentages_numerically_and_attach_composition_evidence(self):
+        raw = fixture()
+        raw["successors"] = [
+            {"name": name, "successors": [
+                {"name": "Состав", "successors": [
+                    {"name": "Доля X", "value": value},
+                    {"name": "Доля Y", "value": 1},
+                ]}]}
+            for name, value in [("B", "98,7 %"), ("A", 99.1), ("C", "99,1"),
+                                ("Range", "99–100"), ("Limit", "≥99.2"), ("Invalid", 101)]
+        ]
+        _, digest = index_export(raw)
+        result = rank_export(RESOURCE, raw, "", ["Состав"], ["Доля X"], "volume", digest, 10, 2)
+        self.assertEqual([(row.record.trail[-1], row.percent) for row in result.ranking],
+                         [("A", "99.1"), ("C", "99.1")])
+        self.assertEqual((result.matched_records, result.skipped_records), (3, 3))
+        self.assertEqual(result.ranking[0].composition.children[1]["value"], 1)
+        ids = {e["evidence_id"] for e in collect_evidence(result.model_dump())}
+        self.assertIn(result.ranking[0].percentage.evidence_id, ids)
+        self.assertIn(result.ranking[0].composition.evidence_id, ids)
+
     def test_search_inside_nodes_not_titles_and_preserves_context(self):
         result = search_export(RESOURCE, fixture(), "примес", 10, 20, "saved_snapshot")
         self.assertEqual(result.total_matches, 2)

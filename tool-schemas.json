@@ -1,29 +1,67 @@
 [
   {
-    "name": "list_inforesources",
+    "name": "analyze_gas_composition",
     "title": null,
-    "description": "Search configured resources by title/path. This is a local catalog, not a live listing of the user's fund; access is checked only when reading.",
+    "description": "Read gas grades from База технологических газов. Use base=Ar, H, He, or the exact class name. For shared impurities pass compare_with for the second class. Returns the intersection of components with an upper limit found in at least one grade of each class, with evidence from both classes. Otherwise ranks grades by the lower bound of their main gas volume percentage and returns full recognized compositions. Keeps ≥ and ≤, never treats bounds as exact. Only the monogas classes are compared.",
     "inputSchema": {
       "properties": {
-        "query": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "base": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Base",
+          "type": "string"
+        },
+        "compare_with": {
           "default": "",
-          "maxLength": 200,
-          "title": "Query",
+          "maxLength": 100,
+          "title": "Compare With",
           "type": "string"
         },
         "limit": {
-          "default": 20,
-          "maximum": 50,
+          "default": 10,
+          "maximum": 30,
           "minimum": 1,
           "title": "Limit",
           "type": "integer"
         }
       },
-      "title": "list_inforesourcesArguments",
+      "required": [
+        "path",
+        "base"
+      ],
+      "title": "analyze_gas_compositionArguments",
       "type": "object"
     },
     "outputSchema": {
       "$defs": {
+        "CommonGasImpurity": {
+          "additionalProperties": false,
+          "properties": {
+            "component": {
+              "title": "Component",
+              "type": "string"
+            },
+            "left": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "right": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "required": [
+            "component",
+            "left",
+            "right"
+          ],
+          "title": "CommonGasImpurity",
+          "type": "object"
+        },
         "Error": {
           "additionalProperties": false,
           "properties": {
@@ -48,43 +86,196 @@
           "title": "Error",
           "type": "object"
         },
-        "Listing": {
+        "Evidence": {
           "additionalProperties": false,
           "properties": {
-            "source": {
-              "const": "configured_catalog",
-              "default": "configured_catalog",
-              "title": "Source",
+            "evidence_id": {
+              "title": "Evidence Id",
               "type": "string"
             },
-            "resources": {
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
               "items": {
-                "$ref": "#/$defs/Resource"
+                "type": "string"
               },
-              "title": "Resources",
+              "title": "Trail",
               "type": "array"
             },
-            "total_matches": {
-              "title": "Total Matches",
-              "type": "integer"
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
             },
-            "truncated": {
-              "title": "Truncated",
-              "type": "boolean"
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
             },
-            "access_checked": {
-              "const": false,
-              "default": false,
-              "title": "Access Checked",
+            "children_truncated": {
+              "title": "Children Truncated",
               "type": "boolean"
             }
           },
           "required": [
-            "resources",
-            "total_matches",
-            "truncated"
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
           ],
-          "title": "Listing",
+          "title": "Evidence",
+          "type": "object"
+        },
+        "GasClassReport": {
+          "additionalProperties": false,
+          "properties": {
+            "group": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "matched_records": {
+              "title": "Matched Records",
+              "type": "integer"
+            },
+            "unranked_records": {
+              "title": "Unranked Records",
+              "type": "integer"
+            },
+            "records": {
+              "items": {
+                "$ref": "#/$defs/GasRecord"
+              },
+              "title": "Records",
+              "type": "array"
+            }
+          },
+          "required": [
+            "group",
+            "matched_records",
+            "unranked_records",
+            "records"
+          ],
+          "title": "GasClassReport",
+          "type": "object"
+        },
+        "GasCompositionReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "const": "live_api",
+              "default": "live_api",
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "default": 10,
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "groups": {
+              "items": {
+                "$ref": "#/$defs/GasClassReport"
+              },
+              "title": "Groups",
+              "type": "array"
+            },
+            "common_impurities": {
+              "items": {
+                "$ref": "#/$defs/CommonGasImpurity"
+              },
+              "title": "Common Impurities",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "export_sha256",
+            "groups",
+            "common_impurities"
+          ],
+          "title": "GasCompositionReport",
+          "type": "object"
+        },
+        "GasRecord": {
+          "additionalProperties": false,
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "base": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Base"
+            },
+            "shares": {
+              "items": {
+                "$ref": "#/$defs/GasShare"
+              },
+              "title": "Shares",
+              "type": "array"
+            }
+          },
+          "required": [
+            "record",
+            "base",
+            "shares"
+          ],
+          "title": "GasRecord",
+          "type": "object"
+        },
+        "GasShare": {
+          "additionalProperties": false,
+          "properties": {
+            "components": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "relation": {
+              "enum": [
+                "≥",
+                "≤",
+                "="
+              ],
+              "title": "Relation",
+              "type": "string"
+            },
+            "percent": {
+              "title": "Percent",
+              "type": "string"
+            },
+            "evidence": {
+              "$ref": "#/$defs/Evidence"
+            }
+          },
+          "required": [
+            "components",
+            "relation",
+            "percent",
+            "evidence"
+          ],
+          "title": "GasShare",
           "type": "object"
         },
         "Resource": {
@@ -123,7 +314,7 @@
         "data": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Listing"
+              "$ref": "#/$defs/GasCompositionReport"
             },
             {
               "type": "null"
@@ -146,7 +337,7 @@
       "required": [
         "ok"
       ],
-      "title": "Result[Listing]",
+      "title": "Result[GasCompositionReport]",
       "type": "object"
     },
     "icons": null,
@@ -161,9 +352,788 @@
     "execution": null
   },
   {
+    "name": "compare_node_children",
+    "title": null,
+    "description": "Compute common direct-child labels of two distinct lists selected from search_inforesource. For impurities, first find the actual impurity lists under each gas record, never compare the chemical elements themselves. Supply pointers and hash from the SAME export and depth. Changed exports, empty/unresolved lists fail explicitly. Output contains evidence for both sides of every match. This compares labels, not chemical synonyms; results cover only the returned lists.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "left_pointer": {
+          "maxLength": 2048,
+          "title": "Left Pointer",
+          "type": "string"
+        },
+        "right_pointer": {
+          "maxLength": 2048,
+          "title": "Right Pointer",
+          "type": "string"
+        },
+        "export_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Export Sha256",
+          "type": "string"
+        },
+        "depth": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "left_pointer",
+        "right_pointer",
+        "export_sha256"
+      ],
+      "title": "compare_node_childrenArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "ComparisonReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "left": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "right": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "common": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Common",
+              "type": "array"
+            },
+            "left_only": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Left Only",
+              "type": "array"
+            },
+            "right_only": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Right Only",
+              "type": "array"
+            },
+            "rule": {
+              "title": "Rule",
+              "type": "string"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "export_sha256",
+            "left",
+            "right",
+            "common",
+            "left_only",
+            "right_only",
+            "rule",
+            "warnings"
+          ],
+          "title": "ComparisonReport",
+          "type": "object"
+        },
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Evidence": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_id": {
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Trail",
+              "type": "array"
+            },
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "children_truncated": {
+              "title": "Children Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
+          ],
+          "title": "Evidence",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ComparisonReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[ComparisonReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "count_graph",
+    "title": null,
+    "description": "Count occurrences, defined IDs and links in a bounded export, including ancestors. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "depth": {
+          "default": 0,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "start": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Start",
+          "type": "string"
+        },
+        "max_nodes": {
+          "default": 100,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Nodes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "count_graphArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "CountReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "ontology": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ontology"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "requested_start": {
+              "title": "Requested Start",
+              "type": "string"
+            },
+            "counts": {
+              "$ref": "#/$defs/Counts"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "requested_start",
+            "counts",
+            "warnings"
+          ],
+          "title": "CountReport",
+          "type": "object"
+        },
+        "Counts": {
+          "additionalProperties": false,
+          "properties": {
+            "node_occurrences": {
+              "title": "Node Occurrences",
+              "type": "integer"
+            },
+            "distinct_defined_ids": {
+              "title": "Distinct Defined Ids",
+              "type": "integer"
+            },
+            "definitions_without_id": {
+              "title": "Definitions Without Id",
+              "type": "integer"
+            },
+            "link_occurrences": {
+              "title": "Link Occurrences",
+              "type": "integer"
+            },
+            "edge_occurrences": {
+              "title": "Edge Occurrences",
+              "type": "integer"
+            },
+            "scope": {
+              "const": "returned_export_including_ancestors",
+              "default": "returned_export_including_ancestors",
+              "title": "Scope",
+              "type": "string"
+            },
+            "full_graph_count": {
+              "const": false,
+              "default": false,
+              "title": "Full Graph Count",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "node_occurrences",
+            "distinct_defined_ids",
+            "definitions_without_id",
+            "link_occurrences",
+            "edge_occurrences"
+          ],
+          "title": "Counts",
+          "type": "object"
+        },
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CountReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[CountReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "create_folder",
+    "title": null,
+    "description": "Create a folder in the user's IACPaaS fund, live only. parent='' means fund root; name is one component. Requires an explicit user request. Does not create an inforesource or edit catalog.json. Never automatically retry after a connection error.",
+    "inputSchema": {
+      "properties": {
+        "parent": {
+          "maxLength": 512,
+          "title": "Parent",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parent",
+        "name"
+      ],
+      "title": "create_folderArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "FolderChange": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "created",
+                "moved_to_trash"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "source": {
+              "const": "live_api",
+              "default": "live_api",
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "operation"
+          ],
+          "title": "FolderChange",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FolderChange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[FolderChange]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "delete_folder",
+    "title": null,
+    "description": "Move a folder from My Fund to the IACPaaS recycle bin. Live HTTP server with --login --fund-login required. Call only after the user explicitly requests deletion and gives the exact folder path. confirm_path must equal path. Never retry automatically.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "confirm_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Confirm Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "confirm_path"
+      ],
+      "title": "delete_folderArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "FolderChange": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            },
+            "operation": {
+              "enum": [
+                "created",
+                "moved_to_trash"
+              ],
+              "title": "Operation",
+              "type": "string"
+            },
+            "source": {
+              "const": "live_api",
+              "default": "live_api",
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "operation"
+          ],
+          "title": "FolderChange",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FolderChange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[FolderChange]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
     "name": "get_inforesource",
     "title": null,
-    "description": "Read metadata and root of a configured resource (depth=0). Use exact path returned by list_inforesources. IDs are strings.",
+    "description": "Read metadata and root (depth=0). Use exact path returned by list_inforesources or list_fund_resources. IDs are strings.",
     "inputSchema": {
       "properties": {
         "path": {
@@ -951,148 +1921,36 @@
     "execution": null
   },
   {
-    "name": "count_graph",
+    "name": "list_fund_resources",
     "title": null,
-    "description": "Count occurrences, defined IDs and links in a bounded export, including ancestors. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges.",
+    "description": "Search resource titles/paths in the authenticated My Fund, including subfolders, up to 16 folders per call. Empty parent starts at the fund root. Check truncated/skipped_folders. Returned paths can be read or searched immediately.",
     "inputSchema": {
       "properties": {
-        "path": {
-          "maxLength": 512,
-          "minLength": 1,
-          "title": "Path",
-          "type": "string"
-        },
-        "depth": {
-          "default": 0,
-          "maximum": 3,
-          "minimum": 0,
-          "title": "Depth",
-          "type": "integer"
-        },
-        "start": {
+        "parent": {
           "default": "",
           "maxLength": 512,
-          "title": "Start",
+          "title": "Parent",
           "type": "string"
         },
-        "max_nodes": {
-          "default": 100,
-          "maximum": 200,
+        "query": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Query",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 50,
           "minimum": 1,
-          "title": "Max Nodes",
+          "title": "Limit",
           "type": "integer"
         }
       },
-      "required": [
-        "path"
-      ],
-      "title": "count_graphArguments",
+      "title": "list_fund_resourcesArguments",
       "type": "object"
     },
     "outputSchema": {
       "$defs": {
-        "CountReport": {
-          "additionalProperties": false,
-          "properties": {
-            "resource": {
-              "$ref": "#/$defs/Resource"
-            },
-            "ontology": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Ontology"
-            },
-            "source": {
-              "enum": [
-                "live_api",
-                "saved_snapshot"
-              ],
-              "title": "Source",
-              "type": "string"
-            },
-            "requested_depth": {
-              "title": "Requested Depth",
-              "type": "integer"
-            },
-            "requested_start": {
-              "title": "Requested Start",
-              "type": "string"
-            },
-            "counts": {
-              "$ref": "#/$defs/Counts"
-            },
-            "warnings": {
-              "items": {
-                "type": "string"
-              },
-              "title": "Warnings",
-              "type": "array"
-            }
-          },
-          "required": [
-            "resource",
-            "source",
-            "requested_depth",
-            "requested_start",
-            "counts",
-            "warnings"
-          ],
-          "title": "CountReport",
-          "type": "object"
-        },
-        "Counts": {
-          "additionalProperties": false,
-          "properties": {
-            "node_occurrences": {
-              "title": "Node Occurrences",
-              "type": "integer"
-            },
-            "distinct_defined_ids": {
-              "title": "Distinct Defined Ids",
-              "type": "integer"
-            },
-            "definitions_without_id": {
-              "title": "Definitions Without Id",
-              "type": "integer"
-            },
-            "link_occurrences": {
-              "title": "Link Occurrences",
-              "type": "integer"
-            },
-            "edge_occurrences": {
-              "title": "Edge Occurrences",
-              "type": "integer"
-            },
-            "scope": {
-              "const": "returned_export_including_ancestors",
-              "default": "returned_export_including_ancestors",
-              "title": "Scope",
-              "type": "string"
-            },
-            "full_graph_count": {
-              "const": false,
-              "default": false,
-              "title": "Full Graph Count",
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "node_occurrences",
-            "distinct_defined_ids",
-            "definitions_without_id",
-            "link_occurrences",
-            "edge_occurrences"
-          ],
-          "title": "Counts",
-          "type": "object"
-        },
         "Error": {
           "additionalProperties": false,
           "properties": {
@@ -1115,6 +1973,57 @@
             "hint"
           ],
           "title": "Error",
+          "type": "object"
+        },
+        "FundListing": {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "const": "my_fund",
+              "default": "my_fund",
+              "title": "Source",
+              "type": "string"
+            },
+            "parent": {
+              "title": "Parent",
+              "type": "string"
+            },
+            "resources": {
+              "items": {
+                "$ref": "#/$defs/Resource"
+              },
+              "title": "Resources",
+              "type": "array"
+            },
+            "scanned_folders": {
+              "title": "Scanned Folders",
+              "type": "integer"
+            },
+            "total_matches": {
+              "title": "Total Matches",
+              "type": "integer"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            },
+            "skipped_folders": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Skipped Folders",
+              "type": "array"
+            }
+          },
+          "required": [
+            "parent",
+            "resources",
+            "scanned_folders",
+            "total_matches",
+            "truncated",
+            "skipped_folders"
+          ],
+          "title": "FundListing",
           "type": "object"
         },
         "Resource": {
@@ -1153,7 +2062,7 @@
         "data": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CountReport"
+              "$ref": "#/$defs/FundListing"
             },
             {
               "type": "null"
@@ -1176,7 +2085,1092 @@
       "required": [
         "ok"
       ],
-      "title": "Result[CountReport]",
+      "title": "Result[FundListing]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "list_inforesources",
+    "title": null,
+    "description": "Search configured resources by title/path. This is a local catalog, not a live listing of the user's fund; access is checked only when reading.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Query",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 50,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "title": "list_inforesourcesArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Listing": {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "const": "configured_catalog",
+              "default": "configured_catalog",
+              "title": "Source",
+              "type": "string"
+            },
+            "resources": {
+              "items": {
+                "$ref": "#/$defs/Resource"
+              },
+              "title": "Resources",
+              "type": "array"
+            },
+            "total_matches": {
+              "title": "Total Matches",
+              "type": "integer"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            },
+            "access_checked": {
+              "const": false,
+              "default": false,
+              "title": "Access Checked",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "resources",
+            "total_matches",
+            "truncated"
+          ],
+          "title": "Listing",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Listing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[Listing]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "rank_records_by_percentage",
+    "title": null,
+    "description": "Rank live IACPaaS records under one group by an exact percentage. Use the group's pointer and same export hash/depth from search. Supply exact relative node labels from each record to its composition, then from composition to the component's percentage value. Verify one common percentage basis and units in the graph before calling. Returns rows and evidence for records, composition and percentages. Reports skipped rows.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "group_pointer": {
+          "maxLength": 2048,
+          "title": "Group Pointer",
+          "type": "string"
+        },
+        "composition_path": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Composition Path",
+          "type": "array"
+        },
+        "percentage_path": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Percentage Path",
+          "type": "array"
+        },
+        "percent_basis": {
+          "enum": [
+            "volume",
+            "mass",
+            "mole"
+          ],
+          "title": "Percent Basis",
+          "type": "string"
+        },
+        "export_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Export Sha256",
+          "type": "string"
+        },
+        "depth": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 10,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "group_pointer",
+        "composition_path",
+        "percentage_path",
+        "percent_basis",
+        "export_sha256"
+      ],
+      "title": "rank_records_by_percentageArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Evidence": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_id": {
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Trail",
+              "type": "array"
+            },
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "children_truncated": {
+              "title": "Children Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
+          ],
+          "title": "Evidence",
+          "type": "object"
+        },
+        "RankedRecord": {
+          "additionalProperties": false,
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "composition": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "percentage": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "percent": {
+              "title": "Percent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "record",
+            "composition",
+            "percentage",
+            "percent"
+          ],
+          "title": "RankedRecord",
+          "type": "object"
+        },
+        "RankingReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "group": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "percent_basis": {
+              "title": "Percent Basis",
+              "type": "string"
+            },
+            "matched_records": {
+              "title": "Matched Records",
+              "type": "integer"
+            },
+            "skipped_records": {
+              "title": "Skipped Records",
+              "type": "integer"
+            },
+            "ranking": {
+              "items": {
+                "$ref": "#/$defs/RankedRecord"
+              },
+              "title": "Ranking",
+              "type": "array"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "export_sha256",
+            "group",
+            "percent_basis",
+            "matched_records",
+            "skipped_records",
+            "ranking",
+            "warnings"
+          ],
+          "title": "RankingReport",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RankingReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[RankingReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "search_fund_content",
+    "title": null,
+    "description": "Search node contents in up to 12 resources in authenticated My Fund. Supply separate terms, e.g. водород, аргон, примес, состав. Searches inside exports even when no resource title matches. Each report shows counts, sample hits, pointers and export hash. Check truncated, skipped_folders and resource errors; use search_inforesource for more hits in a specific resource.",
+    "inputSchema": {
+      "properties": {
+        "queries": {
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Queries",
+          "type": "array"
+        },
+        "parent": {
+          "default": "",
+          "maxLength": 512,
+          "title": "Parent",
+          "type": "string"
+        },
+        "depth": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "queries"
+      ],
+      "title": "search_fund_contentArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Evidence": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_id": {
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Trail",
+              "type": "array"
+            },
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "children_truncated": {
+              "title": "Children Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
+          ],
+          "title": "Evidence",
+          "type": "object"
+        },
+        "FundSearchReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resources": {
+              "items": {
+                "$ref": "#/$defs/Resource"
+              },
+              "title": "Resources",
+              "type": "array"
+            },
+            "queries": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Queries",
+              "type": "array"
+            },
+            "scanned_folders": {
+              "title": "Scanned Folders",
+              "type": "integer"
+            },
+            "skipped_folders": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Skipped Folders",
+              "type": "array"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            },
+            "results": {
+              "items": {
+                "$ref": "#/$defs/FundSearchResult"
+              },
+              "title": "Results",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resources",
+            "queries",
+            "scanned_folders",
+            "skipped_folders",
+            "truncated",
+            "results"
+          ],
+          "title": "FundSearchReport",
+          "type": "object"
+        },
+        "FundSearchResult": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "reports": {
+              "items": {
+                "$ref": "#/$defs/SearchReport"
+              },
+              "title": "Reports",
+              "type": "array"
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Error"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "resource",
+            "reports"
+          ],
+          "title": "FundSearchResult",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        },
+        "SearchReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "query": {
+              "title": "Query",
+              "type": "string"
+            },
+            "scanned_nodes": {
+              "title": "Scanned Nodes",
+              "type": "integer"
+            },
+            "total_matches": {
+              "title": "Total Matches",
+              "type": "integer"
+            },
+            "matches_truncated": {
+              "title": "Matches Truncated",
+              "type": "boolean"
+            },
+            "matches": {
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "title": "Matches",
+              "type": "array"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "export_sha256",
+            "query",
+            "scanned_nodes",
+            "total_matches",
+            "matches_truncated",
+            "matches",
+            "warnings"
+          ],
+          "title": "SearchReport",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FundSearchReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[FundSearchReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "search_inforesource",
+    "title": null,
+    "description": "Search inside a resource found in the catalog or My Fund. Query is a literal case-insensitive substring in name/value/meta/link/comment; try one term, formula or stem at a time. Returns fields, trails, pointers and evidence IDs. Depth 0..10; an empty result only applies to this export and term.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "query": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "depth": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 30,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "query"
+      ],
+      "title": "search_inforesourceArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Evidence": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_id": {
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Trail",
+              "type": "array"
+            },
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "children_truncated": {
+              "title": "Children Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
+          ],
+          "title": "Evidence",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        },
+        "SearchReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "query": {
+              "title": "Query",
+              "type": "string"
+            },
+            "scanned_nodes": {
+              "title": "Scanned Nodes",
+              "type": "integer"
+            },
+            "total_matches": {
+              "title": "Total Matches",
+              "type": "integer"
+            },
+            "matches_truncated": {
+              "title": "Matches Truncated",
+              "type": "boolean"
+            },
+            "matches": {
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "title": "Matches",
+              "type": "array"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "export_sha256",
+            "query",
+            "scanned_nodes",
+            "total_matches",
+            "matches_truncated",
+            "matches",
+            "warnings"
+          ],
+          "title": "SearchReport",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SearchReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[SearchReport]",
       "type": "object"
     },
     "icons": null,

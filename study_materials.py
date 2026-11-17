@@ -122,17 +122,60 @@ def collect(headers, depth, directory, targets=None, *, resource_path=None):
     return manifest
 
 
+def find_gases(depth):
+    import httpx
+    from domain import Fault, Service
+
+    user, password = api.read_credentials()
+    with httpx.Client(base_url=api.BASE_URL, timeout=api.TIMEOUT, follow_redirects=False) as client:
+        fund = api.FundSession(client)
+        try:
+            headers = api.signin_headers(user, password)
+            fund.login(user, password)
+        finally:
+            del user, password
+        service = Service("live", headers, fund_session=fund)
+        print("Читаю содержимое ресурсов «Моего Фонда»…", flush=True)
+        try:
+            report = service.search_fund_content("", ["водород", "аргон", "примес", "газ"], depth)
+        except Fault as exc:
+            print(f"{exc.code}: {exc.message} {exc.hint}", file=sys.stderr)
+            return 1
+
+    directory = BASE / "data/materials-study"
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = directory / f"gas-fund-search-{uuid4().hex[:10]}.json"
+    save_json(filename, report.model_dump(mode="json"))
+    for item in report.results:
+        if item.error:
+            print(f"{item.resource.path} — {item.error.code}: {item.error.message}")
+            continue
+        counts = ", ".join(f"{entry.query}: {entry.total_matches}" for entry in item.reports)
+        print(f"{item.resource.path} — {counts}")
+        for entry in item.reports:
+            if entry.query != "газ":
+                for hit in entry.matches:
+                    print("  " + " → ".join(hit.trail))
+    if report.truncated or report.skipped_folders:
+        print("Фонд прочитан частично. Пропущенные папки: " + ", ".join(report.skipped_folders))
+    print(f"Отчёт: {filename}")
+    return 0 if report.results and all(not item.error for item in report.results) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--depth", type=int, choices=range(1, 11), default=3)
     parser.add_argument("--verify-mcp", action="store_true", help="After collection, verify registered resources through stdio and HTTP with the same login")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--gases", action="store_true", help="Collect chemical substances and metalwire materials to locate gas records")
+    selection.add_argument("--find-gases", action="store_true", help="Search actual contents of exports across My Fund")
     selection.add_argument("--resource-path", help="Verify and connect an exact resource path inside My Fund")
     args = parser.parse_args()
-    if (args.gases or args.resource_path is not None) and args.verify_mcp:
+    if (args.gases or args.find_gases or args.resource_path is not None) and args.verify_mcp:
         parser.error("--verify-mcp applies only to the original material properties study")
     try:
+        if args.find_gases:
+            return find_gases(args.depth)
         resource_path = api.folder_path(args.resource_path) if args.resource_path is not None else None
         targets = [("chemicals", "База химических элементов и веществ", "data"),
                    ("metalwire", "База металлопроволочных материалов", "data")] if args.gases else None

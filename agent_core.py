@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import jsonschema
@@ -12,9 +13,21 @@ import jsonschema
 from answer_evidence import collect_evidence, audit_answer
 
 READ_TOOLS = {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph"}
-SEARCH_TOOLS = {"search_inforesource", "compare_node_children"}
+SEARCH_TOOLS = {"search_inforesource", "compare_node_children", "rank_records_by_percentage",
+                "search_fund_content", "analyze_gas_composition"}
+DISCOVERY_TOOLS = {"list_inforesources", "list_fund_resources", "search_fund_content"}
+READ_ONLY_TOOLS = READ_TOOLS | SEARCH_TOOLS | DISCOVERY_TOOLS
 WRITE_TOOLS = {"create_folder", "delete_folder"}
-ALLOWED_TOOLS = READ_TOOLS | WRITE_TOOLS | SEARCH_TOOLS
+ALLOWED_TOOLS = READ_ONLY_TOOLS | WRITE_TOOLS
+COMPOSITION_QUERY = re.compile(r"(?:примес|состав|содержан|процент|доля|долю|чистот|на основе)", re.IGNORECASE)
+GAS_QUERY = re.compile(r"(?:газ|аргон|водород|гелий|гелия)", re.IGNORECASE)
+GAS_DATABASE = "База технологических газов"
+GAS_COMPARISON_QUERY = re.compile(
+    r"(?:какие\s+)?общие\s+примеси\s+(?:(?:указаны|есть)\s+)?у\s+газов\s+на\s+основе\s+"
+    r"(?P<base>[^\W\d_]+)\s+и\s+(?P<other>[^\W\d_]+)[?.]?"
+    r"(?:\s+покажи\s+исходные\s+записи\s+с\s+обеих\s+сторон[.!]?)?",
+    re.IGNORECASE,
+)
 
 
 class AgentError(Exception):
@@ -34,8 +47,40 @@ class Turn:
     text: str = ""
 
 
+@dataclass
+class RetryContext:
+    question: str
+    history_length: int
+    paths: set
+    evidence: dict
+
+
 def failure(code, message, hint):
     return {"ok": False, "data": None, "error": {"code": code, "message": message, "hint": hint}}
+
+
+def matches_folder_request(question, tool, arguments):
+    """Only the current user message may authorize a mutation and its target."""
+    def literal(value):
+        value = re.escape(value)
+        return rf'(?:«{value}»|"{value}"|`{value}`|{value})'
+
+    prefix = r"(?i:(?:пожалуйста[\s,]+)?)"
+    suffix = r"(?i:(?:\s+(?:в\s+)?IACPaaS)?)[.!]?"
+    folder = r"(?i:(?:(?:тестовую|пустую|учебную)\s+)?(?:папку|каталог)\s+)"
+    if tool == "delete_folder":
+        path = literal(arguments["path"])
+        command = rf"(?:(?i:удали(?:те)?\s+){folder}{path}|(?i:перемести(?:те)?\s+)(?:{folder})?{path}(?i:\s+в\s+корзину))"
+    else:
+        parent, name = arguments["parent"], arguments["name"]
+        if parent:
+            target = rf"(?:{literal(parent + '/' + name)}|{literal(name)}(?i:\s+(?:внутри|в\s+папке|в)\s+){literal(parent)})"
+        else:
+            target = literal(name) + r"(?i:(?:\s+в\s+корне(?:\s+фонда)?)?)"
+        command = rf"(?i:создай(?:те)?\s+){folder}{target}"
+        if description := arguments.get("description"):
+            command += rf"(?i:\s+с\s+описанием\s+){literal(description)}"
+    return re.fullmatch(prefix + command + suffix, question.strip()) is not None
 
 
 class Trace:
@@ -66,9 +111,13 @@ class Trace:
 
 
 class Agent:
-    def __init__(self, session, model, trace, max_rounds=8, max_calls=16):
+    def __init__(self, session, model, trace, max_rounds=8, max_calls=16, *, replay=None):
         self.session, self.model, self.trace = session, model, trace
         self.max_rounds, self.max_calls = max_rounds, max_calls
+        self.replay = replay
+        self.retry_context = None
+        self.write_in_turn = False
+        self.user_request = ""
         self.tools = {}
         self.known_paths = set()
         self.attempted_writes = set()
@@ -80,7 +129,7 @@ class Agent:
         for tool in sorted((await self.session.list_tools()).tools, key=lambda t: t.name):
             if tool.name not in ALLOWED_TOOLS:
                 continue
-            expected_read = tool.name in READ_TOOLS | SEARCH_TOOLS
+            expected_read = tool.name in READ_ONLY_TOOLS
             if not tool.annotations or tool.annotations.readOnlyHint is not expected_read:
                 raise AgentError("Аннотации MCP не соответствуют политике инструмента.")
             item = tool.model_dump(mode="json")
@@ -98,9 +147,12 @@ class Agent:
             jsonschema.validate(arguments, self.tools[call.name]["inputSchema"])
         except (ValueError, jsonschema.ValidationError, TypeError):
             return failure("INVALID_ARGUMENT", "Аргументы не соответствуют JSON Schema.", "Исправьте аргументы по схеме; глубина 0..3, max_nodes 1..200.")
-        if call.name in (READ_TOOLS | SEARCH_TOOLS) - {"list_inforesources"} and arguments.get("path") not in self.known_paths:
-            return failure("PATH_NOT_DISCOVERED", "Путь ещё не подтверждён каталогом.", "Сначала вызовите list_inforesources, затем используйте точный path из результата.")
+        if call.name in READ_ONLY_TOOLS - DISCOVERY_TOOLS and arguments.get("path") not in self.known_paths:
+            return failure("PATH_NOT_DISCOVERED", "Путь ещё не подтверждён каталогом или фондом.", "Используйте точный path из list_inforesources или list_fund_resources.")
         if call.name in WRITE_TOOLS:
+            if not matches_folder_request(self.user_request, call.name, arguments):
+                return failure("CONFIRMATION_REQUIRED", "Для изменения нужна прямая команда пользователя с точным путём папки.",
+                               "Например: «Создай папку Загрузки/Демо» или «Перемести папку Загрузки/Демо в корзину».")
             signature = (call.name, json.dumps(arguments, sort_keys=True, ensure_ascii=False))
             if signature in self.attempted_writes:
                 return failure("WRITE_ALREADY_ATTEMPTED", "Этот запрос изменения уже отправлялся в текущем диалоге.",
@@ -121,41 +173,180 @@ class Agent:
             if result.get("ok"):
                 return failure("MCP_TOOL_ERROR", "Сервер отметил результат как ошибку.", "Не используйте его как успешные данные.")
             return result
-        if call.name == "list_inforesources":
+        if call.name in DISCOVERY_TOOLS:
             self.known_paths.update(row["path"] for row in result["data"]["resources"])
         return result
+
+    def finish(self, text, evidence=None):
+        self.last_grounding = audit_answer(text, self.evidence if evidence is None else evidence)
+        self.trace.add("answer_grounding", **self.last_grounding)
+        self.trace.add("assistant", text=text)
+        return text
+
+    async def model_step(self, tools, **position):
+        if self.replay is not None and not self.write_in_turn:
+            turn, replayed = await self.replay.step(self.model, tools)
+            position["replayed"] = replayed
+        else:
+            turn = await self.model.step(tools)
+        self.write_in_turn |= any(call.name in WRITE_TOOLS for call in turn.calls)
+        self.trace.add("model_turn", tool_calls=len(turn.calls), **position)
+        return turn
+
+    async def compare_gas_classes(self, base, other):
+        async def run(name, arguments):
+            result = await self.execute(Call(name, name, arguments))
+            self.trace.add("tool_call", name=name, arguments=arguments, result=result)
+            return result
+
+        listing = await run("list_inforesources", {"query": GAS_DATABASE})
+        if not listing["ok"]:
+            return listing["error"]["message"], {}
+        resource = next((row for row in listing["data"]["resources"] if row["title"] == GAS_DATABASE), None)
+        if resource is None:
+            return f"В каталоге MCP не найдена «{GAS_DATABASE}».", {}
+        result = await run("analyze_gas_composition", {"path": resource["path"], "base": base, "compare_with": other})
+        if not result["ok"]:
+            error = result["error"]
+            return f"Сравнение по IACPaaS не удалось. {error['message']} {error['hint']}", {}
+
+        data = result["data"]
+        evidence = {item["evidence_id"]: item for item in collect_evidence(data)}
+        groups = [row["group"] for row in data["groups"]]
+        common = data["common_impurities"]
+        labels = ", ".join(row["component"] for row in common)
+        summary = f"**Общие примеси ({len(common)})** — {labels}." if common else "Общих примесей в прочитанных записях не найдено."
+        lines = [summary, "", "Сравнены классы " + " и ".join(
+            f"«{group['trail'][-1]}» [{group['evidence_id']}]" for group in groups) + "."]
+        if common:
+            lines += ["", "Каждый компонент указан с верхним пределом хотя бы в одной марке каждого класса.", ""]
+            for row in common:
+                sources = [f"«{ref['trail'][len(group['trail'])]}» [{ref['evidence_id']}]"
+                           for group, ref in zip(groups, (row["left"], row["right"]))]
+                lines.append(f"- **{row['component']}** — " + " · ".join(sources))
+        lines += ["", f"Источник — «{resource['title']}», живой API IACPaaS, глубина {data['requested_depth']}."]
+        return "\n".join(lines), evidence
+
+    async def finish_reads(self, searches, evidence=None):
+        self.model.add_user(
+            "Заверши ответ на предыдущий вопрос по уже полученным данным IACPaaS. "
+            "Используй ссылки [E...] на записи или результаты поиска. "
+            "Ограничь вывод проверенными фрагментами. Если искомые данные не получены, "
+            "укажи, что найдено и чего не хватает для ответа."
+        )
+        try:
+            turn = await self.model_step([], final=True)
+        except AgentError:
+            turn = None
+        if turn is not None:
+            if not turn.calls and turn.text.strip():
+                return self.finish(turn.text, evidence)
+            for call in turn.calls:
+                self.model.add_result(call, failure("READ_FINISHED", "Поиск завершён.", "Подведи итог по результатам."))
+        lines = ["Поиск в IACPaaS завершён. Подтвердить запрошенный вывод по полученным данным не удалось."]
+        if searches:
+            lines.append("")
+            for item in list(searches.values())[:8]:
+                data = item["fields"]
+                lines.append(f"- {item['resource']['title']}, запрос «{data['query']}», "
+                             f"глубина {item['requested_depth']}. Совпадений: {data['total_matches']} "
+                             f"[{item['evidence_id']}].")
+        return self.finish("\n".join(lines), evidence)
 
     async def answer(self, question):
         if len(question) > 8000:
             raise AgentError("Вопрос длиннее 8000 символов. Сократите запрос.")
+        self.write_in_turn = False
+        if self.replay is None:
+            return await self.answer_turn(question)
+
+        previous = self.retry_context
+        self.retry_context = None
+        if previous is not None and previous.question == question:
+            # Treat an immediate repeat as a retry of the same turn, including tool discovery.
+            del self.model.history[previous.history_length:]
+            self.known_paths = previous.paths.copy()
+            self.evidence = previous.evidence.copy()
+        context = RetryContext(question, len(self.model.history), self.known_paths.copy(), self.evidence.copy())
+        answer = await self.answer_turn(question)
+        if not self.write_in_turn:
+            self.retry_context = context
+        return answer
+
+    async def answer_turn(self, question):
+        self.user_request = question
         self.trace.add("user", text=question)
         self.model.add_user(question)
+        comparison = GAS_COMPARISON_QUERY.fullmatch(question.strip())
+        if comparison and {"list_inforesources", "analyze_gas_composition"} <= self.tools.keys():
+            answer, evidence = await self.compare_gas_classes(**comparison.groupdict())
+            self.evidence.update(evidence)
+            self.model.add_assistant(answer)
+            return self.finish(answer, evidence)
         calls = 0
+        successful_read = False
+        searches = {}
+        needs_live_data = bool(COMPOSITION_QUERY.search(question) and GAS_QUERY.search(question))
+        turn_evidence = {} if needs_live_data else None
+        no_live_data = ("Для этого вопроса не получены записи составов из IACPaaS. "
+                        "Проверьте журнал вызовов и доступ к ресурсу с составами.")
+        retried_without_data = False
+        fund_search_attempted = False
         for round_index in range(self.max_rounds):
             # The model must discover exact paths before being offered graph reads.
             visible = [self.tools[name] for name in sorted(self.tools)
-                       if self.known_paths or name == "list_inforesources" or name in WRITE_TOOLS]
-            turn = await self.model.step(visible)
-            self.trace.add("model_turn", round=round_index + 1, tool_calls=len(turn.calls))
+                       if self.known_paths or name in DISCOVERY_TOOLS | WRITE_TOOLS]
+            turn = await self.model_step(visible, round=round_index + 1)
             if not turn.calls:
                 if not turn.text.strip():
                     raise AgentError("Модель не вернула ни ответ, ни вызов инструмента.")
-                self.last_grounding = audit_answer(turn.text, self.evidence)
-                self.trace.add("answer_grounding", **self.last_grounding)
-                self.trace.add("assistant", text=turn.text)
-                return turn.text
+                if needs_live_data and (not successful_read or (
+                    "search_fund_content" in self.tools and not fund_search_attempted
+                )):
+                    if not retried_without_data and round_index + 1 < self.max_rounds:
+                        retried_without_data = True
+                        self.model.add_user(
+                            "Проверь содержимое «Моего Фонда» через search_fund_content, если инструмент доступен. "
+                            "Передай названия газов и 'примес' отдельными запросами. "
+                            "Если поиск по фонду недоступен, читай подходящие записи через search_inforesource.")
+                        continue
+                    if not successful_read:
+                        return self.finish(no_live_data, turn_evidence)
+                return self.finish(turn.text, turn_evidence)
             if calls + len(turn.calls) > self.max_calls:
-                raise AgentError("Достигнут лимит вызовов инструментов. Уточните или сузьте запрос.")
+                if not successful_read:
+                    if needs_live_data:
+                        for call in turn.calls:
+                            self.model.add_result(call, failure("READ_FINISHED", "Лимит вызовов достигнут.", "Заверши поиск."))
+                        return self.finish(no_live_data, turn_evidence)
+                    raise AgentError("Достигнут лимит вызовов инструментов. Уточните или сузьте запрос.")
+                for call in turn.calls:
+                    self.model.add_result(call, failure("READ_FINISHED", "Лимит вызовов достигнут.", "Подведи итог по результатам."))
+                break
             for call in turn.calls:
                 result = await self.execute(call)
+                fund_search_attempted |= call.name == "search_fund_content"
+                fund_search_attempted |= call.name == "analyze_gas_composition" and result.get("ok", False)
                 calls += 1
                 self.trace.add("tool_call", name=call.name, arguments=call.arguments, result=result)
                 refs = collect_evidence(result.get("data")) if result.get("ok") else []
                 self.evidence.update({r["evidence_id"]: r for r in refs})
+                if turn_evidence is not None:
+                    turn_evidence.update({r["evidence_id"]: r for r in refs if r["source"] == "live_api"})
+                if refs and call.name in READ_TOOLS | SEARCH_TOOLS and (
+                    not needs_live_data or any(ref["source"] == "live_api" for ref in refs)
+                ):
+                    successful_read = True
+                if call.name in {"search_inforesource", "search_fund_content"}:
+                    searches.update({r["evidence_id"]: r for r in refs if r["pointer"] == "/matches"})
                 # Metadata added to model context is separate from the validated MCP result.
                 context_result = dict(result)
                 if refs:
                     context_result["evidence_refs"] = [{"id": r["evidence_id"], "pointer": r["pointer"],
                                                       "trail": r["trail"]} for r in refs]
                 self.model.add_result(call, context_result)
+        if successful_read:
+            return await self.finish_reads(searches, turn_evidence)
+        if needs_live_data:
+            return self.finish(no_live_data, turn_evidence)
         raise AgentError("Достигнут лимит шагов модели; итоговый ответ не получен. Сузьте запрос.")

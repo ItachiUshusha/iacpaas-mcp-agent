@@ -67,9 +67,12 @@ async def connect(transport, mode, env):
 
 async def exercise(session, mode):
     await session.initialize()
-    tools = (await session.list_tools()).tools
+    tools = sorted((await session.list_tools()).tools, key=lambda tool: tool.name)
     schemas = {tool.name: tool.outputSchema for tool in tools}
-    assert set(schemas) == {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph", "create_folder", "delete_folder", "search_inforesource", "compare_node_children"}
+    assert set(schemas) == {"list_inforesources", "list_fund_resources", "get_inforesource", "get_subgraph",
+                            "count_graph", "create_folder", "delete_folder", "search_inforesource",
+                            "compare_node_children", "rank_records_by_percentage", "search_fund_content",
+                            "analyze_gas_composition"}
     assert all(schemas.values()), "Every tool needs an output schema"
     traces = []
 
@@ -104,6 +107,7 @@ async def exercise(session, mode):
     await call("get_subgraph", {"path": path, "depth": 99}, "schema")
     await call("get_subgraph", {"path": path, "depth": True}, "schema")
     if mode == "snapshot":
+        await call("search_fund_content", {"queries": ["аргон", "водород"]}, "FUND_LOGIN_REQUIRED")
         await call("get_subgraph", {"path": path, "depth": 1}, "SNAPSHOT_SCOPE")
     else:
         subgraph = await call("get_subgraph", {"path": path, "depth": 1})

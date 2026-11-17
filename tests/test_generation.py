@@ -7,7 +7,7 @@ from unittest.mock import patch
 import httpx
 
 from agent_core import AgentError
-from generation import Generation
+from generation import Generation, ModelReplay
 from providers import CompatibleModel, OllamaModel
 from domain import BASE, Service, Selection
 from server import respond
@@ -62,7 +62,8 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         body = json.loads(bodies[0])
         self.assertEqual(body["temperature"], 0)
         self.assertEqual(body["seed"], 42)
-        self.assertFalse(body["parallel_tool_calls"])
+        self.assertNotIn("parallel_tool_calls", body)
+        self.assertTrue(body["provider"]["require_parameters"])
         self.assertEqual(body["provider"]["only"], ["fixed-provider"])
         self.assertFalse(body["provider"]["allow_fallbacks"])
         self.assertEqual(body["provider"]["max_price"], {"prompt": 0, "completion": 0})
@@ -71,10 +72,31 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         for provider, model, url, pin in [
                 ("compatible", "openrouter/free", "https://openrouter.ai/api/v1", "provider"),
                 ("compatible", "openrouter/auto", "https://openrouter.ai/api/v1", "provider"),
-                ("compatible", "vendor/model", "https://openrouter.ai/api/v1", ""),
-                ("openai", "model", "", "")]:
+                ("compatible", "vendor/model", "https://openrouter.ai/api/v1", "")]:
             with self.subTest(provider=provider, model=model), self.assertRaises(AgentError):
                 Generation(True, 42, pin).validate(provider, model, url)
+        Generation(True).validate("openai", "model")
+
+    async def test_model_replay_excludes_folder_mutations(self):
+        bodies = []
+
+        def handler(request):
+            bodies.append(request.content)
+            return httpx.Response(200, json={"done": True, "message": {"role": "assistant", "tool_calls": [
+                {"function": {"name": "create_folder", "arguments": {"path": "Загрузки/Тест"}}}
+            ]}})
+
+        replay = ModelReplay()
+        tools = [{"name": "create_folder", "inputSchema": {"type": "object"}}]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            for _ in range(2):
+                model = OllamaModel(client, "fixed-model", "rules", Generation(True))
+                model.add_user("Создай папку Загрузки/Тест")
+                turn, hit = await replay.step(model, tools)
+                self.assertFalse(hit)
+                self.assertEqual(turn.calls[0].name, "create_folder")
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[0], bodies[1])
 
     async def test_identical_mcp_reads_and_preserved_graph_order(self):
         service = Service("snapshot")

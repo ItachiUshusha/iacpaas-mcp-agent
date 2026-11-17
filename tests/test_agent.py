@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import httpx
 
@@ -18,9 +19,13 @@ class ScriptedModel:
         self.turns = iter(turns)
         self.results = []
         self.questions = []
+        self.answers = []
 
     def add_user(self, question):
         self.questions.append(question)
+
+    def add_assistant(self, text):
+        self.answers.append(text)
 
     def add_result(self, call, result):
         self.results.append(result)
@@ -94,7 +99,8 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             agent = Agent(session, DiscoveryModel(), self.trace)
             await agent.initialize()
             await agent.answer("Найди ресурс")
-        self.assertEqual(offered[0], {"list_inforesources", "create_folder", "delete_folder"})
+        self.assertEqual(offered[0], {"list_inforesources", "list_fund_resources", "search_fund_content",
+                                      "create_folder", "delete_folder"})
         self.assertIn("count_graph", offered[1])
 
     async def test_clarification_preserves_conversation(self):
@@ -111,12 +117,79 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
             await agent.answer("Повторяй")
         self.assertEqual(len(model.results), 2)
 
+    async def test_read_budget_returns_citable_scope_when_model_keeps_searching(self):
+        path = "Загрузки/База газов"
+        calls = []
+        search = {"resource": {"title": "База газов", "path": path, "resource_id": "test"},
+                  "source": "live_api", "requested_depth": 10, "export_sha256": "abc",
+                  "query": "примес", "scanned_nodes": 12, "total_matches": 0,
+                  "matches_truncated": False, "matches": []}
+
+        class SearchingModel(ScriptedModel):
+            async def step(self, tools):
+                calls.append(tools)
+                return await super().step(tools)
+
+        model = SearchingModel([
+            Turn([Call("1", "search_inforesource", {"path": path, "query": "примес"})]),
+            Turn([Call("2", "search_inforesource", {"path": path, "query": "гелий"})]),
+        ])
+        agent = Agent(None, model, self.trace, max_rounds=1)
+        with patch.object(agent, "execute", return_value={"ok": True, "data": search}) as execute:
+            answer = await agent.answer("Какие общие примеси у водорода и гелия?")
+        execute.assert_awaited_once()
+        self.assertEqual(calls[-1], [])
+        self.assertIn("Совпадений: 0", answer)
+        self.assertEqual(agent.last_grounding["status"], "cited")
+        source, = agent.last_grounding["sources"]
+        self.assertEqual(source["resource"]["path"], path)
+        self.assertEqual(source["fields"]["scanned_nodes"], 12)
+
     async def test_call_budget_stops_before_executing_batch(self):
         model = ScriptedModel([Turn([Call(str(i), "unknown", {}) for i in range(3)])])
         agent = Agent(None, model, self.trace, max_calls=2)
         with self.assertRaisesRegex(AgentError, "лимит вызовов"):
             await agent.answer("Запрос")
         self.assertEqual(model.results, [])
+
+    async def test_gas_question_cannot_claim_search_without_fresh_reads(self):
+        model = ScriptedModel([Turn(text="В базе газов примесей нет.")] * 2)
+        agent = Agent(None, model, self.trace)
+        answer = await agent.answer("Какие примеси у аргона?")
+        self.assertIn("не получены записи", answer)
+        self.assertNotIn("примесей нет", answer)
+
+    async def test_repeated_gas_class_comparison_uses_live_analysis_without_model(self):
+        title = "База технологических газов"
+        resource = {"title": title, "path": f"Загрузки/{title}", "resource_id": "test"}
+
+        def ref(identifier, *trail):
+            return {"evidence_id": identifier, "trail": [title, "Моногазы", *trail]}
+
+        left_group = "Газы на основе Водорода"
+        right_group = "Газы на основе Аргона"
+        comparison = {"resource": resource, "source": "live_api", "requested_depth": 10,
+                      "groups": [{"group": ref("Ea1", left_group), "records": []},
+                                 {"group": ref("Eb2", right_group), "records": []}],
+                      "common_impurities": [{"component": "X",
+                                             "left": ref("Ec3", left_group, "Марка А", "X"),
+                                             "right": ref("Ed4", right_group, "Марка Б", "X")}]}
+        model = ScriptedModel([])
+        agent = Agent(None, model, self.trace)
+        agent.tools = {"list_inforesources": {}, "analyze_gas_composition": {}, "search_fund_content": {}}
+        question = "Какие общие примеси указаны у газов на основе водорода и аргона? Покажи исходные записи с обеих сторон"
+        results = [{"ok": True, "data": {"resources": [resource]}}, {"ok": True, "data": comparison}]
+        with patch.object(agent, "execute", side_effect=results * 2) as execute:
+            first = await agent.answer(question)
+            second = await agent.answer(question)
+        self.assertEqual(first, second)
+        self.assertEqual(model.answers, [first, second])
+        calls = [args.args[0] for args in execute.await_args_list]
+        self.assertEqual([call.name for call in calls], ["list_inforesources", "analyze_gas_composition"] * 2)
+        self.assertEqual(calls[1].arguments, {"path": resource["path"], "base": "водорода", "compare_with": "аргона"})
+        self.assertIn("«Марка А» [Ec3] · «Марка Б» [Ed4]", second)
+        self.assertEqual(agent.last_grounding["status"], "cited")
+        self.assertEqual(len(agent.last_grounding["sources"]), 4)
 
     async def test_trace_redacts_known_secrets_and_credentials(self):
         self.trace.add("test", text="value secret-test-token", data={"Authorization": "Bearer hidden", "password": "hidden"})

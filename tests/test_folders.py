@@ -7,13 +7,76 @@ import jsonschema
 
 from agent import child_environment
 from agent_core import Agent, Call
-from domain import Service
+from answer_evidence import collect_evidence
+from domain import Selection, Service
 import iacpaas_client as api
 from server import respond
 from smoke import connect
 
 
 class FolderTests(unittest.TestCase):
+    def test_search_fund_checks_content_under_generic_name_and_reports_failed_exports(self):
+        folder = "Учебные материалы"
+        path = f"{folder}/Справочник"
+        failed_path = f"{folder}/Закрытая база"
+        fund = Mock()
+        fund.list_items.side_effect = {
+            "": [{"path": "/" + folder, "title": folder, "nodeType": "folder"}],
+            folder: [
+                {"path": f"{folder} / Справочник", "title": "Справочник", "nodeType": "storage unit", "id": "101"},
+                {"path": f"{folder} / Закрытая база", "title": "Закрытая база", "nodeType": "storage unit", "id": "102"},
+            ],
+        }.__getitem__
+
+        def export(path, **options):
+            if path == failed_path:
+                raise api.ClientError("Нет доступа.")
+            return {"code": 101, "title": "Справочник", "name": "Справочник", "successors": [
+                {"name": "Газы", "successors": [{"name": "на основе водорода"},
+                                               {"name": "на основе аргона"},
+                                               {"name": "Примеси"}]},
+            ]}
+
+        service = Service("live", {}, Mock(side_effect=export), fund_session=fund)
+        self.assertEqual(service.list_fund_resources("", "газ", 12).resources, [])
+        result = service.search_fund_content("", ["водород", "аргон", "примес"])
+        by_path = {item.resource.path: item for item in result.results}
+        success, skipped = by_path[path], by_path[failed_path]
+        self.assertEqual(success.resource.path, path)
+        self.assertEqual([report.total_matches for report in success.reports], [1, 1, 1])
+        self.assertEqual(skipped.error.code, "UPSTREAM_ERROR")
+        self.assertEqual(service.exporter.call_count, 2)
+        evidence = collect_evidence(result.model_dump())
+        self.assertTrue(any(item["trail"][-1] == "на основе аргона" for item in evidence))
+
+    def test_fund_discovery_and_live_search_outside_configured_catalog(self):
+        folder = "Учебные материалы"
+        path = f"{folder}/Газы"
+        fund = Mock()
+        fund.list_items.side_effect = {
+            "": [{"path": "/" + folder, "title": folder, "nodeType": "folder"},
+                 {"path": "Корзина", "title": "Корзина", "nodeType": "folder"}],
+            folder: [{"path": f"{folder} / Газы", "title": "Газы", "nodeType": "storage unit",
+                      "id": "9999999999999999999"},
+                     {"path": "Другой раздел / Газы", "title": "Газы", "nodeType": "storage unit",
+                      "id": "42"}],
+        }.__getitem__
+        exporter = Mock(return_value={"code": 9999999999999999999, "title": "Газы",
+                                      "name": "Газы", "successors": [{"name": "Аргон"}]})
+        service = Service("live", {}, exporter, fund_session=fund)
+        self.assertFalse(service.list_resources("Газы", 10).resources)
+        listing = service.list_fund_resources("", "газ", 10)
+        self.assertEqual([row.path for row in listing.resources], [path])
+        self.assertEqual(listing.scanned_folders, 2)
+        self.assertFalse(listing.truncated)
+        search = service.search(path, "аргон", 10)
+        self.assertEqual(search.source, "live_api")
+        self.assertEqual(search.matches[0].trail, ["Газы", "Аргон"])
+        self.assertEqual(service.read(Selection(path=path)).resource.resource_id, "9999999999999999999")
+        exporter.return_value = {"code": 42, "title": "Другая база"}
+        self.assertEqual(respond(lambda: service.search(path, "аргон", 10))
+                         .structuredContent["error"]["code"], "RESOURCE_MISMATCH")
+
     def test_creation_payload_and_no_network_without_fund_login(self):
         captured = []
         def opened(request, timeout):
@@ -132,7 +195,18 @@ class FolderTransportTests(unittest.IsolatedAsyncioTestCase):
             agent = Agent(session, None, Mock())
             await agent.initialize()
             call = Call("1", "create_folder", {"parent": "", "name": "Тест"})
+            agent.user_request = "Покажи, как создать папку Тест"
+            self.assertEqual((await agent.execute(call))["error"]["code"], "CONFIRMATION_REQUIRED")
+            agent.user_request = "Создай папку Другая"
+            self.assertEqual((await agent.execute(call))["error"]["code"], "CONFIRMATION_REQUIRED")
+            agent.user_request = "Создай папку Тест"
             result = await agent.execute(call)
             self.assertEqual(result["error"]["code"], "LIVE_REQUIRED")
             result = await agent.execute(call)
             self.assertEqual(result["error"]["code"], "WRITE_ALREADY_ATTEMPTED")
+
+            deletion = Call("2", "delete_folder", {"path": "Загрузки/Тест", "confirm_path": "Загрузки/Тест"})
+            agent.user_request = "Перемести папку Загрузки/Тест-другая в корзину"
+            self.assertEqual((await agent.execute(deletion))["error"]["code"], "CONFIRMATION_REQUIRED")
+            agent.user_request = "Перемести папку «Загрузки/Тест» в корзину IACPaaS"
+            self.assertEqual((await agent.execute(deletion))["error"]["code"], "LIVE_REQUIRED")

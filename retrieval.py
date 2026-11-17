@@ -1,9 +1,11 @@
 """Bounded content search and exact child-label comparison, with traceable evidence."""
 import hashlib
 import json
+import re
 import unicodedata
+from decimal import Decimal
 
-from domain import ComparisonReport, Evidence, Fault, MAX_RESULT_BYTES, SearchReport
+from domain import ComparisonReport, Evidence, Fault, MAX_RESULT_BYTES, RankedRecord, RankingReport, SearchReport
 
 FIELDS = ("id", "name", "value", "meta", "type", "valtype", "link", "link_id", "comment")
 SEARCH_FIELDS = ("name", "value", "meta", "link", "comment")
@@ -54,12 +56,12 @@ def index_export(raw):
     return rows, digest
 
 
-def evidence(rows, pointer, digest):
+def evidence(rows, pointer, digest, child_limit=20):
     node, trail = rows[pointer]
     children = node.get("successors", [])
     ref = hashlib.sha256((digest + ":" + pointer).encode()).hexdigest()[:20]
     return Evidence(evidence_id="E" + ref, pointer=pointer, trail=list(trail), fields=fields(node),
-                    children=[fields(c) for c in children[:20]], children_truncated=len(children) > 20)
+                    children=[fields(c) for c in children[:child_limit]], children_truncated=len(children) > child_limit)
 
 
 def bounded(result):
@@ -72,13 +74,17 @@ def search_export(resource, raw, query, depth, limit, source):
     if not query.strip():
         raise Fault("INVALID_ARGUMENT", "Нужен непустой поисковый фрагмент.", "Например: водород. Для названий ресурсов используйте list_inforesources.")
     rows, digest = index_export(raw)
+    return search_index(resource, rows, digest, query, depth, limit, source)
+
+
+def search_index(resource, rows, digest, query, depth, limit, source, child_limit=20):
     needle = normalize(query)
     matched = [pointer for pointer, (node, _) in rows.items()
                if any(needle in normalize(node[key]) for key in SEARCH_FIELDS
                       if node.get(key) is not None)]
     return bounded(SearchReport(resource=resource, source=source, requested_depth=depth,
         export_sha256=digest, query=query, scanned_nodes=len(rows), total_matches=len(matched),
-        matches_truncated=len(matched) > limit, matches=[evidence(rows, p, digest) for p in matched[:limit]],
+        matches_truncated=len(matched) > limit, matches=[evidence(rows, p, digest, child_limit) for p in matched[:limit]],
         warnings=WARNINGS))
 
 
@@ -111,3 +117,54 @@ def compare_export(resource, raw, left, right, expected_digest, depth, source):
         common=common, left_only=sorted(set(a)-set(b)), right_only=sorted(set(b)-set(a)),
         rule="Пересечение меток непосредственных потомков: NFC, без учёта регистра и повторных пробелов. Синонимы и формулы автоматически не объединяются.",
         warnings=WARNINGS + ["Правильность выбора двух списков проверяется по их путям. Совпадение меток само по себе не подтверждает химическую классификацию."]))
+
+
+def rank_export(resource, raw, group_pointer, composition_path, percentage_path, basis, expected_digest, depth, limit):
+    rows, digest = index_export(raw)
+    if digest != expected_digest:
+        raise Fault("EXPORT_CHANGED", "Экспорт изменился после поиска.", "Возьмите указатели из нового экспорта.")
+    if group_pointer not in rows:
+        raise Fault("INVALID_ARGUMENT", "Указатель на группу не найден.", "Используйте pointer из search_inforesource.")
+
+    def follow(pointer, segments):
+        for segment in segments:
+            needle = normalize(segment)
+            matches = [index for index, child in enumerate(rows[pointer][0].get("successors", []))
+                       if needle and needle == normalize(label(child))]
+            if len(matches) != 1:
+                return None
+            pointer = f"{pointer}/successors/{matches[0]}"
+        return pointer
+
+    candidates = []
+    group = rows[group_pointer][0].get("successors", [])
+    for index in range(len(group)):
+        record = f"{group_pointer}/successors/{index}"
+        composition = follow(record, composition_path)
+        if composition is None or not rows[composition][0].get("successors"):
+            continue
+        percentage = follow(composition, percentage_path)
+        if percentage is None:
+            continue
+        node = rows[percentage][0]
+        value = node.get("value")
+        if (type(value) not in (str, int, float) or node.get("link") or node.get("link_id")
+                or node.get("restrictor") or node.get("specifier")):
+            continue
+        match = re.fullmatch(r"([0-9]{1,3}(?:[.,][0-9]{1,30})?)\s*%?", str(value).strip())
+        if match:
+            percent = Decimal(match[1].replace(",", "."))
+            if percent <= 100:
+                candidates.append((percent, record, composition, percentage))
+    if not candidates:
+        raise Fault("INSUFFICIENT_DATA", "В выбранной группе нет раскрытого состава с сопоставимыми точными долями.",
+                    "Сверьте глубину, пути к составу и доле компонента и единицы измерения.")
+    candidates.sort(key=lambda row: (row[0].copy_negate(), normalize(label(rows[row[1]][0])), row[1]))
+    ranking = [RankedRecord(record=evidence(rows, record, digest), composition=evidence(rows, composition, digest),
+                            percentage=evidence(rows, percentage, digest), percent=format(percent, "f"))
+               for percent, record, composition, percentage in candidates[:limit]]
+    return bounded(RankingReport(resource=resource, source="live_api", requested_depth=depth, export_sha256=digest,
+        group=evidence(rows, group_pointer, digest), percent_basis=basis, matched_records=len(candidates),
+        skipped_records=len(group) - len(candidates), ranking=ranking,
+        warnings=WARNINGS + ["Ранжируются непосредственные записи выбранной группы.",
+                             "Тип доли задан при вызове и должен соответствовать полям исходного графа."]))

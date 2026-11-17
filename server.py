@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from typing import Annotated, Callable
+from typing import Annotated, Callable, Literal
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -12,8 +12,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field, ValidationError
 
-from domain import (CountReport, Depth, Error, Fault, FolderChange, Graph, Listing, NodeLimit,
-                    ResourcePath, Result, Selection, Service, StartPath, SearchReport, ComparisonReport)
+from domain import (CountReport, Depth, Error, Fault, FolderChange, FundListing, FundSearchReport, GasCompositionReport, Graph, Listing, NodeLimit,
+                    ResourcePath, Result, Selection, Service, StartPath, SearchReport, ComparisonReport, RankingReport)
 import iacpaas_client as api
 
 
@@ -50,8 +50,26 @@ def create_server(service: Service, port=8765) -> FastMCP:
         return respond(lambda: service.list_resources(query, limit))
 
     @server.tool(annotations=read)
+    async def list_fund_resources(
+        parent: StartPath = "",
+        query: Annotated[str, Field(max_length=200, strict=True)] = "",
+        limit: Annotated[int, Field(ge=1, le=50, strict=True)] = 20,
+    ) -> Annotated[CallToolResult, Result[FundListing]]:
+        """Search resource titles/paths in the authenticated My Fund, including subfolders, up to 16 folders per call. Empty parent starts at the fund root. Check truncated/skipped_folders. Returned paths can be read or searched immediately."""
+        return await asyncio.to_thread(respond, lambda: service.list_fund_resources(parent, query, limit))
+
+    @server.tool(annotations=read)
+    async def search_fund_content(
+        queries: Annotated[list[Annotated[str, Field(min_length=1, max_length=100, strict=True)]], Field(min_length=1, max_length=4)],
+        parent: StartPath = "",
+        depth: Annotated[int, Field(ge=1, le=10, strict=True)] = 10,
+    ) -> Annotated[CallToolResult, Result[FundSearchReport]]:
+        """Search node contents in up to 12 resources in authenticated My Fund. Supply separate terms, e.g. водород, аргон, примес, состав. Searches inside exports even when no resource title matches. Each report shows counts, sample hits, pointers and export hash. Check truncated, skipped_folders and resource errors; use search_inforesource for more hits in a specific resource."""
+        return await asyncio.to_thread(respond, lambda: service.search_fund_content(parent, queries, depth))
+
+    @server.tool(annotations=read)
     async def get_inforesource(path: ResourcePath) -> Annotated[CallToolResult, Result[Graph]]:
-        """Read metadata and root of a configured resource (depth=0). Use exact path returned by list_inforesources. IDs are strings."""
+        """Read metadata and root (depth=0). Use exact path returned by list_inforesources or list_fund_resources. IDs are strings."""
         return await asyncio.to_thread(respond, lambda: service.read(Selection(path=path)))
 
     @server.tool(annotations=read)
@@ -89,7 +107,7 @@ def create_server(service: Service, port=8765) -> FastMCP:
         depth: Annotated[int, Field(ge=0, le=10, strict=True)] = 10,
         limit: Annotated[int, Field(ge=1, le=30, strict=True)] = 20,
     ) -> Annotated[CallToolResult, Result[SearchReport]]:
-        """Search INSIDE a configured resource's bounded export. Query is a literal case-insensitive substring in name/value/meta/link/comment; try one term, formula or stem at a time. Returns node fields, trails, JSON pointers and evidence IDs. At most 2 MB upstream and 20000 scanned nodes; depth 0..10. An empty result only applies to this export and term. Snapshot supports only depth=0."""
+        """Search inside a resource found in the catalog or My Fund. Query is a literal case-insensitive substring in name/value/meta/link/comment; try one term, formula or stem at a time. Returns fields, trails, pointers and evidence IDs. Depth 0..10; an empty result only applies to this export and term."""
         return await asyncio.to_thread(respond, lambda: service.search(path, query, depth, limit))
 
     @server.tool(annotations=read)
@@ -102,6 +120,31 @@ def create_server(service: Service, port=8765) -> FastMCP:
     ) -> Annotated[CallToolResult, Result[ComparisonReport]]:
         """Compute common direct-child labels of two distinct lists selected from search_inforesource. For impurities, first find the actual impurity lists under each gas record, never compare the chemical elements themselves. Supply pointers and hash from the SAME export and depth. Changed exports, empty/unresolved lists fail explicitly. Output contains evidence for both sides of every match. This compares labels, not chemical synonyms; results cover only the returned lists."""
         return await asyncio.to_thread(respond, lambda: service.compare_children(path, left_pointer, right_pointer, export_sha256, depth))
+
+    @server.tool(annotations=read)
+    async def rank_records_by_percentage(
+        path: ResourcePath,
+        group_pointer: Annotated[str, Field(max_length=2048, strict=True)],
+        composition_path: Annotated[list[Annotated[str, Field(min_length=1, max_length=200)]], Field(min_length=1, max_length=8)],
+        percentage_path: Annotated[list[Annotated[str, Field(min_length=1, max_length=200)]], Field(min_length=1, max_length=8)],
+        percent_basis: Literal["volume", "mass", "mole"],
+        export_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", strict=True)],
+        depth: Annotated[int, Field(ge=1, le=10, strict=True)] = 10,
+        limit: Annotated[int, Field(ge=1, le=30, strict=True)] = 10,
+    ) -> Annotated[CallToolResult, Result[RankingReport]]:
+        """Rank live IACPaaS records under one group by an exact percentage. Use the group's pointer and same export hash/depth from search. Supply exact relative node labels from each record to its composition, then from composition to the component's percentage value. Verify one common percentage basis and units in the graph before calling. Returns rows and evidence for records, composition and percentages. Reports skipped rows."""
+        return await asyncio.to_thread(respond, lambda: service.rank_percentages(
+            path, group_pointer, composition_path, percentage_path, percent_basis, export_sha256, depth, limit))
+
+    @server.tool(annotations=read)
+    async def analyze_gas_composition(
+        path: ResourcePath,
+        base: Annotated[str, Field(min_length=1, max_length=100, strict=True)],
+        compare_with: Annotated[str, Field(max_length=100, strict=True)] = "",
+        limit: Annotated[int, Field(ge=1, le=30, strict=True)] = 10,
+    ) -> Annotated[CallToolResult, Result[GasCompositionReport]]:
+        """Read gas grades from База технологических газов. Use base=Ar, H, He, or the exact class name. For shared impurities pass compare_with for the second class. Returns the intersection of components with an upper limit found in at least one grade of each class, with evidence from both classes. Otherwise ranks grades by the lower bound of their main gas volume percentage and returns full recognized compositions. Keeps ≥ and ≤, never treats bounds as exact. Only the monogas classes are compared."""
+        return await asyncio.to_thread(respond, lambda: service.gas_composition(path, base, compare_with, limit))
 
     return server
 

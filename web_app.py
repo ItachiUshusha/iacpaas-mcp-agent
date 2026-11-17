@@ -18,7 +18,7 @@ import uvicorn
 from agent import connection, child_environment
 from agent_core import Agent, AgentError, Trace
 from providers import CompatibleModel, OllamaModel, OpenAIModel
-from generation import add_generation_arguments, generation_from_args
+from generation import ModelReplay, add_generation_arguments, generation_from_args
 import iacpaas_client as api
 
 BASE = Path(__file__).resolve().parent
@@ -34,8 +34,42 @@ class BrowserTrace(Trace):
         self.events.append(self.clean({"event": event, **data}))
 
 
+def folder_answer(events):
+    """Report folder-only turns from tool receipts, including explicit rejections."""
+    calls = [event for event in events if event["event"] == "tool_call"]
+    labels = {
+        "create_folder": ("created", "Папка создана"),
+        "delete_folder": ("moved_to_trash", "Папка перемещена в корзину"),
+    }
+    if not calls or any(call["name"] not in labels for call in calls):
+        return None
+    answers = []
+    for call in calls:
+        operation, label = labels[call["name"]]
+        result = call["result"]
+        data = result.get("data") or {}
+        error = result.get("error") or {}
+        if result.get("ok") and data.get("operation") == operation:
+            answers.append(f"{label} в IACPaaS. Путь: {data['path']}.")
+        elif error.get("code") == "FUND_LOGIN_REQUIRED":
+            answers.append(
+                "Перенос не выполнен. Подключённому MCP-серверу нужна веб-сессия «Мой Фонд».\n\n"
+                "Откройте PowerShell в папке проекта и запустите сервер:\n\n"
+                "```powershell\n"
+                ".\\run.ps1 serve --transport http --mode live --login --fund-login\n"
+                "```\n\n"
+                "Войдите в IACPaaS. Перезапустите веб-чат с "
+                "--mcp-url http://127.0.0.1:8765/mcp, начните новый диалог и повторите запрос."
+            )
+        else:
+            detail = " ".join(filter(None, (error.get("message"), error.get("hint"))))
+            answers.append(("MCP не подтвердил операцию. " + detail).strip())
+    return "\n\n".join(answers)
+
+
 def create_app(args, env, key, model_factory=None, connector=connection):
     generation = generation_from_args(args)
+    replay = ModelReplay() if generation.deterministic else None
     chats = {}
     lock = asyncio.Lock()
     token = secrets.token_urlsafe(32)
@@ -68,6 +102,7 @@ def create_app(args, env, key, model_factory=None, connector=connection):
     async def status(request):
         return JSONResponse({"provider": args.provider, "model": args.model,
             "source": "server_selected" if args.mcp_url else args.mode,
+            "mcp_transport": "external_http" if args.mcp_url else args.transport,
             "model_configured": ready, "generation": generation.__dict__, "token": token}, headers={"Cache-Control": "no-store"})
 
     async def chat(request):
@@ -136,15 +171,18 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                 else:
                     model = OpenAIModel(request.app.state.client, args.model, key, instructions, generation)
                 trace.add("run", provider=args.provider, model=args.model, generation=generation.__dict__)
-                chats[sid] = Agent(request.app.state.session, model, trace)
+                chats[sid] = Agent(request.app.state.session, model, trace, replay=replay)
             agent = chats[sid]
             offset = len(agent.trace.events)
             try:
                 if not agent.tools:
                     await agent.initialize()
                 answer = await agent.answer(question.strip())
-                return JSONResponse({"session": sid, "answer": answer,
-                    "events": agent.trace.events[offset:], "grounding": agent.last_grounding}, headers={"Cache-Control": "no-store"})
+                events = agent.trace.events[offset:]
+                operation_answer = folder_answer(events)
+                return JSONResponse({"session": sid, "answer": operation_answer or answer,
+                    "events": events, "grounding": None if operation_answer else agent.last_grounding},
+                    headers={"Cache-Control": "no-store"})
             except Exception as exc:
                 # Incomplete provider histories must not be reused after a failed tool round.
                 message = str(exc) if isinstance(exc, AgentError) else "Сбой агента или MCP. Проверьте сервер и подключение."
@@ -153,6 +191,10 @@ def create_app(args, env, key, model_factory=None, connector=connection):
                 agent.trace.add("run_end", status="failed", message=message)
                 agent.trace.close()
                 chats.pop(sid, None)
+                operation_answer = folder_answer(events)
+                if operation_answer:
+                    return JSONResponse({"answer": operation_answer, "reset": True, "events": events},
+                                        headers={"Cache-Control": "no-store"})
                 return JSONResponse({"error": message, "reset": True, "events": events}, status_code=502)
 
     app = Starlette(lifespan=lifespan, routes=[Route("/", index), Route("/assets/{name}", asset),

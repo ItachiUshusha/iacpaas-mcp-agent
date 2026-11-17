@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, Generic, Literal, TypeVar
 
@@ -54,6 +55,16 @@ class Listing(Model):
     total_matches: int
     truncated: bool
     access_checked: Literal[False] = False
+
+
+class FundListing(Model):
+    source: Literal["my_fund"] = "my_fund"
+    parent: str
+    resources: list[Resource]
+    scanned_folders: int
+    total_matches: int
+    truncated: bool
+    skipped_folders: list[str]
 
 
 class Selection(Model):
@@ -133,6 +144,21 @@ class SearchReport(Model):
     warnings: list[str]
 
 
+class FundSearchResult(Model):
+    resource: Resource
+    reports: list[SearchReport]
+    error: Error | None = None
+
+
+class FundSearchReport(Model):
+    resources: list[Resource]
+    queries: list[str]
+    scanned_folders: int
+    skipped_folders: list[str]
+    truncated: bool
+    results: list[FundSearchResult]
+
+
 class ComparisonReport(Model):
     resource: Resource
     source: Literal["live_api", "saved_snapshot"]
@@ -146,6 +172,62 @@ class ComparisonReport(Model):
     right_only: list[str]
     rule: str
     warnings: list[str]
+
+
+class RankedRecord(Model):
+    record: Evidence
+    composition: Evidence
+    percentage: Evidence
+    percent: str
+
+
+class RankingReport(Model):
+    resource: Resource
+    source: Literal["live_api", "saved_snapshot"]
+    requested_depth: int
+    export_sha256: str
+    complete_graph: Literal[False] = False
+    group: Evidence
+    percent_basis: str
+    matched_records: int
+    skipped_records: int
+    ranking: list[RankedRecord]
+    warnings: list[str]
+
+
+class GasShare(Model):
+    components: list[str]
+    relation: Literal["≥", "≤", "="]
+    percent: str
+    evidence: Evidence
+
+
+class GasRecord(Model):
+    record: Evidence
+    base: str | None
+    shares: list[GasShare]
+
+
+class GasClassReport(Model):
+    group: Evidence
+    matched_records: int
+    unranked_records: int
+    records: list[GasRecord]
+
+
+class CommonGasImpurity(Model):
+    component: str
+    left: Evidence
+    right: Evidence
+
+
+class GasCompositionReport(Model):
+    resource: Resource
+    source: Literal["live_api"] = "live_api"
+    requested_depth: int = 10
+    export_sha256: str
+    groups: list[GasClassReport]
+    common_impurities: list[CommonGasImpurity]
 
 
 class FolderChange(Model):
@@ -217,6 +299,87 @@ class Service:
         found.sort(key=lambda r: (r.path.casefold(), r.path, r.resource_id))
         return Listing(resources=found[:limit], total_matches=len(found), truncated=len(found) > limit)
 
+    def fund_items(self, parent: str):
+        if self.mode != "live" or self.fund_session is None:
+            raise Fault("FUND_LOGIN_REQUIRED", "Для просмотра фонда нужна веб-сессия IACPaaS.",
+                        "Запустите MCP по HTTP в live-режиме с --login --fund-login.")
+        try:
+            api.folder_path(parent, allow_root=True)
+        except api.ClientError as exc:
+            raise Fault("INVALID_ARGUMENT", str(exc), "Укажите относительный путь папки.") from None
+        try:
+            items = self.fund_session.list_items(parent)
+        except api.ClientError as exc:
+            raise Fault("UPSTREAM_ERROR", str(exc), "Проверьте веб-вход и доступ к папке.") from None
+        for item in items:
+            path, title = item.get("path"), item.get("title")
+            if not isinstance(path, str) or not isinstance(title, str) or not title.strip():
+                continue
+            path = "/".join(part.strip() for part in path.removeprefix("/").split("/"))
+            try:
+                api.folder_path(path)
+            except api.ClientError:
+                continue
+            if path.rpartition("/")[0] == parent and path.split("/", 1)[0] != "Корзина":
+                yield path, title, item.get("nodeType"), item.get("id")
+
+    def list_fund_resources(self, parent: str, query: str, limit: int) -> FundListing:
+        pending = [parent]
+        queued = {parent}
+        skipped = []
+        found = {}
+        scanned = 0
+        for folder in pending:
+            if scanned + len(skipped) >= 16:
+                break
+            try:
+                items = sorted(self.fund_items(folder), key=lambda row: (row[0].casefold(), row[0]))
+            except Fault as exc:
+                if folder == parent or exc.code != "UPSTREAM_ERROR":
+                    raise
+                skipped.append(folder)
+                continue
+            scanned += 1
+            for path, title, kind, resource_id in items:
+                if kind == "folder" and path not in queued:
+                    queued.add(path)
+                    pending.append(path)
+                elif (kind == "storage unit" and isinstance(resource_id, str) and resource_id.isdecimal()
+                      and query.casefold() in f"{title} {path}".casefold()):
+                    found[path] = Resource(title=title, path=path, resource_id=resource_id)
+        resources = sorted(found.values(), key=lambda row: (row.path.casefold(), row.path))
+        return FundListing(parent=parent, resources=resources[:limit], scanned_folders=scanned,
+                           total_matches=len(resources), skipped_folders=skipped,
+                           truncated=len(resources) > limit or scanned + len(skipped) < len(pending))
+
+    def resource_for_read(self, path: str) -> Resource:
+        resource = next((row for row in self.catalog if row.path == path), None)
+        if resource is not None:
+            return resource
+        if self.mode == "live" and self.fund_session is not None:
+            try:
+                api.folder_path(path)
+            except api.ClientError as exc:
+                raise Fault("INVALID_ARGUMENT", str(exc), "Укажите путь из каталога или фонда.") from None
+            matches = [Resource(title=title, path=actual, resource_id=resource_id)
+                       for actual, title, kind, resource_id in self.fund_items(path.rpartition("/")[0])
+                       if actual == path and kind == "storage unit"
+                       and isinstance(resource_id, str) and resource_id.isdecimal()]
+            if len(matches) == 1:
+                return matches[0]
+        raise Fault("RESOURCE_NOT_CONFIGURED", "Ресурс не найден по точному пути.",
+                    "Используйте list_inforesources или list_fund_resources.")
+
+    @staticmethod
+    def match_export(resource: Resource, raw: dict) -> Resource:
+        code = raw.get("code")
+        if (not isinstance(code, (str, int)) or isinstance(code, bool) or not str(code)
+                or raw.get("title") != resource.title
+                or str(code) != resource.resource_id):
+            raise Fault("RESOURCE_MISMATCH", "Ответ API не соответствует выбранному ресурсу.",
+                        "Сверьте путь и название ресурса в каталоге или фонде.")
+        return resource
+
     def folder_headers(self):
         if self.mode != "live":
             raise Fault("LIVE_REQUIRED", "Операции с каталогами доступны только в live-режиме.", "Запустите сервер с --mode live и войдите в IACPaaS.")
@@ -264,9 +427,7 @@ class Service:
         return FolderChange(path=path, operation="moved_to_trash")
 
     def read(self, selection: Selection) -> Graph:
-        resource = next((r for r in self.catalog if r.path == selection.path), None)
-        if resource is None:
-            raise Fault("RESOURCE_NOT_CONFIGURED", "Ресурс отсутствует в каталоге сервера.", "Вызовите list_inforesources и используйте точный path из результата.")
+        resource = self.resource_for_read(selection.path)
         if self.mode == "snapshot":
             if selection.depth != 0 or selection.start:
                 raise Fault("SNAPSHOT_SCOPE", "Сохранён только корень с depth=0.", "Для подграфа запустите live-режим; не считайте отсутствие потомков свойством полного графа.")
@@ -285,8 +446,7 @@ class Service:
             except api.ClientError as exc:
                 # The stage-1 client emits only curated messages, never response bodies.
                 raise Fault("UPSTREAM_ERROR", str(exc), "Проверьте доступ к ресурсу, срок токена и ограничения запроса.") from None
-        if str(raw.get("code")) != resource.resource_id or raw.get("title") != resource.title:
-            raise Fault("RESOURCE_MISMATCH", "Ответ не соответствует ресурсу каталога.", "Проверьте resource_id, title и path в catalog.json.")
+        resource = self.match_export(resource, raw)
         root, counts = project_graph(raw, selection.max_nodes)
         graph = Graph(resource=resource, source="live_api" if self.mode == "live" else "saved_snapshot",
                       ontology=raw.get("ontology"),
@@ -303,9 +463,7 @@ class Service:
 
 
     def search_raw(self, path: str, depth: int):
-        resource = next((r for r in self.catalog if r.path == path), None)
-        if resource is None:
-            raise Fault("RESOURCE_NOT_CONFIGURED", "Ресурс не подключён.", "Сначала list_inforesources; каталог не является полным фондом.")
+        resource = self.resource_for_read(path)
         if self.mode == "snapshot":
             if depth != 0:
                 raise Fault("SNAPSHOT_SCOPE", "В snapshot доступен только корень.", "Укажите depth=0 или используйте live.")
@@ -316,9 +474,7 @@ class Service:
                 raw = self.exporter(path, depth=depth, start=None, headers=headers)
             except api.ClientError:
                 raise Fault("UPSTREAM_ERROR", "Не удалось получить поисковый экспорт.", "Проверьте доступ; при превышении 2 МБ уменьшите depth. Не делайте вывод об отсутствии сведений.") from None
-        if str(raw.get("code")) != resource.resource_id or raw.get("title") != resource.title:
-            raise Fault("RESOURCE_MISMATCH", "Ответ не соответствует ресурсу.", "Проверьте каталог и режим снимка.")
-        return resource, raw
+        return self.match_export(resource, raw), raw
 
     def search(self, path: str, query: str, depth: int = 10, limit: int = 20) -> SearchReport:
         from retrieval import search_export
@@ -326,9 +482,55 @@ class Service:
         return search_export(resource, raw, query, depth, limit,
                              "live_api" if self.mode == "live" else "saved_snapshot")
 
+    def search_fund_content(self, parent: str, queries: list[str], depth: int = 10) -> FundSearchReport:
+        from retrieval import bounded, index_export, normalize, search_index
+        if any(not normalize(query) for query in queries):
+            raise Fault("INVALID_ARGUMENT", "Поисковые слова должны быть непустыми.", "Передайте отдельные основы слов.")
+        queries = list({normalize(query): query for query in queries}.values())
+        listing = self.list_fund_resources(parent, "", 12)
+        headers = self.folder_headers()
+
+        def scan(resource):
+            try:
+                raw = self.exporter(resource.path, depth=depth, start=None, headers=headers)
+                self.match_export(resource, raw)
+                rows, digest = index_export(raw)
+                reports = [search_index(resource, rows, digest, query, depth, 2, "live_api", child_limit=3)
+                           for query in queries]
+                return FundSearchResult(resource=resource, reports=reports)
+            except api.ClientError as exc:
+                error = Error(code="UPSTREAM_ERROR", message=str(exc),
+                              hint="Проверьте права и размер экспорта. Эта база не была проверена.")
+            except Fault as exc:
+                error = Error(code=exc.code, message=exc.message, hint=exc.hint)
+            return FundSearchResult(resource=resource, reports=[], error=error)
+
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            results = list(workers.map(scan, listing.resources))
+        return bounded(FundSearchReport(resources=listing.resources, queries=queries, results=results,
+                                        scanned_folders=listing.scanned_folders,
+                                        skipped_folders=listing.skipped_folders, truncated=listing.truncated))
+
     def compare_children(self, path: str, left_pointer: str, right_pointer: str,
                          export_sha256: str, depth: int = 10) -> ComparisonReport:
         from retrieval import compare_export
         resource, raw = self.search_raw(path, depth)
         return compare_export(resource, raw, left_pointer, right_pointer, export_sha256, depth,
                               "live_api" if self.mode == "live" else "saved_snapshot")
+
+    def rank_percentages(self, path: str, group_pointer: str, composition_path: list[str],
+                         percentage_path: list[str], percent_basis: str,
+                         export_sha256: str, depth: int, limit: int) -> RankingReport:
+        from retrieval import rank_export
+        if self.mode != "live":
+            raise Fault("LIVE_REQUIRED", "Рейтинг требует живого экспорта IACPaaS.", "Подключите live MCP.")
+        resource, raw = self.search_raw(path, depth)
+        return rank_export(resource, raw, group_pointer, composition_path, percentage_path,
+                           percent_basis, export_sha256, depth, limit)
+
+    def gas_composition(self, path: str, base: str, compare_with: str, limit: int) -> GasCompositionReport:
+        from gas_composition import analyze_gas_export
+        if self.mode != "live":
+            raise Fault("LIVE_REQUIRED", "Для состава газов нужен живой экспорт IACPaaS.", "Подключите live MCP.")
+        resource, raw = self.search_raw(path, 10)
+        return analyze_gas_export(resource, raw, base, compare_with, limit)

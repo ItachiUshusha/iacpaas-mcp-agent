@@ -1,13 +1,17 @@
+from contextlib import asynccontextmanager
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 from starlette.testclient import TestClient
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from agent import child_environment
-from agent_core import AgentError, Call
+from agent_core import AgentError, Call, Turn
+from domain import BASE, Service
+from server import create_server
 from providers import CompatibleModel
 from web_app import create_app
 
@@ -45,6 +49,71 @@ class WebTests(unittest.TestCase):
     def args(self):
         return SimpleNamespace(provider="compatible", model="openrouter/free", base_url="https://openrouter.ai/api/v1",
                                mcp_url=None, transport="stdio", mode="snapshot")
+
+    def test_reproducible_chat_replays_model_but_reads_current_mcp_data(self):
+        root = json.loads((BASE / "fixtures/root.json").read_text(encoding="utf-8"))
+        exports = []
+        requests = []
+
+        def exporter(path, **kwargs):
+            exports.append(path)
+            return root.copy()
+
+        @asynccontextmanager
+        async def connector(args, env):
+            server = create_server(Service("live", {}, exporter=exporter))
+            async with create_connected_server_and_client_session(server) as session:
+                yield session
+
+        async def model_response(client, url, payload, headers=None):
+            requests.append(payload)
+            message = payload["messages"][-1]
+            if message["role"] == "user":
+                name, arguments = "list_inforesources", {"query": "Система единиц"}
+            else:
+                tool = json.loads(message["content"])
+                if "resources" in tool["data"]:
+                    name, arguments = "get_inforesource", {"path": tool["data"]["resources"][0]["path"]}
+                else:
+                    answer = f"{tool['data']['root']['comment']} (Вариант {len(requests)}). [{tool['evidence_refs'][0]['id']}]"
+                    return {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": answer}}]}
+            call = {"id": str(len(requests)), "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}
+            return {"choices": [{"finish_reason": "tool_calls", "message": {"role": "assistant", "tool_calls": [call]}}]}
+
+        args = self.args()
+        args.base_url = "https://example.com/v1"
+        args.model = "fixed-model"
+        args.mode = "live"
+        args.deterministic = True
+        with patch("providers.post_json", side_effect=model_response):
+            with TestClient(create_app(args, {}, "test-key", connector=connector)) as client:
+                headers = {"X-Chat-Token": client.get("/api/status").json()["token"]}
+
+                def ask(session=""):
+                    response = client.post("/api/chat", headers=headers, json={
+                        "question": "Прочитай описание системы единиц", "session": session})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    result = response.json()
+                    calls = [e["name"] for e in result["events"] if e["event"] == "tool_call"]
+                    self.assertEqual(calls, ["list_inforesources", "get_inforesource"])
+                    self.assertEqual(result["grounding"]["status"], "cited")
+                    return result, [e["replayed"] for e in result["events"] if e["event"] == "model_turn"]
+
+                first, steps = ask()
+                self.assertEqual(steps, [False, False, False])
+                for session in (first["session"], ""):
+                    repeat, steps = ask(session)
+                    self.assertEqual(steps, [True, True, True])
+                    self.assertEqual(repeat["answer"], first["answer"])
+                    self.assertEqual(repeat["grounding"], first["grounding"])
+                self.assertEqual(len(requests), 3)
+                root["comment"] = "Обновлённое описание"
+                revised, steps = ask(first["session"])
+                self.assertEqual(steps, [True, True, False])
+                self.assertIn("Обновлённое описание", revised["answer"])
+                self.assertNotEqual(revised["grounding"], first["grounding"])
+                self.assertEqual(len(requests), 4)
+                self.assertEqual(len(exports), 4)
 
     def test_browser_chat_real_mcp_mocked_cloud_and_followup(self):
         async def model_response(client, url, payload, headers=None):
@@ -84,6 +153,52 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(followup.json()["session"], result["session"])
                 self.assertEqual(client.post("/api/chat", headers=headers, json={"question": "x", "session": result["session"], "reset": True}).status_code, 200)
                 self.assertEqual(client.post("/api/chat", headers=headers, json={"question": "x", "session": result["session"]}).status_code, 404)
+
+    def test_folder_turn_uses_mcp_receipt_instead_of_model_text(self):
+        path = "Загрузки/MCP-demo-test"
+
+        class Model:
+            def __init__(self, client):
+                self.called = False
+
+            def add_user(self, question):
+                pass
+
+            def add_result(self, call, result):
+                pass
+
+            async def step(self, tools):
+                if self.called:
+                    return Turn(text="Модель сообщает произвольный результат [Efake].")
+                self.called = True
+                return Turn(calls=[Call("delete", "delete_folder", {"path": path, "confirm_path": path})])
+
+        for fund_session, expected, ok in (
+            (None, ".\\run.ps1 serve --transport http --mode live --login --fund-login", False),
+            (Mock(), "Папка перемещена в корзину в IACPaaS.", True),
+        ):
+            @asynccontextmanager
+            async def connector(args, env):
+                server = create_server(Service("live", {}, fund_session=fund_session))
+                async with create_connected_server_and_client_session(server) as session:
+                    yield session
+
+            with self.subTest(expected=expected):
+                app = create_app(self.args(), child_environment(), "test-secret",
+                                 model_factory=Model, connector=connector)
+                with TestClient(app) as client:
+                    token = client.get("/api/status").json()["token"]
+                    response = client.post("/api/chat", headers={"X-Chat-Token": token},
+                                           json={"question": f"Перемести {path} в корзину"})
+                    self.assertEqual(response.status_code, 200)
+                    result = response.json()
+                    self.assertIn(expected, result["answer"])
+                    self.assertNotIn("Efake", result["answer"])
+                    self.assertIsNone(result["grounding"])
+                    call = next(event for event in result["events"] if event["event"] == "tool_call")
+                    self.assertIs(call["result"]["ok"], ok)
+                    if fund_session is not None:
+                        fund_session.delete_folder.assert_called_once_with(path)
 
     def test_missing_key_and_origin_are_explicit(self):
         with TestClient(create_app(self.args(), child_environment(), "")) as client:

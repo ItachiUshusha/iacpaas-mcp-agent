@@ -36,3 +36,8 @@ header,footer{flex-shrink:0}
 .evidence-link{display:inline;padding:1px 5px;border-radius:4px;font-size:11px;vertical-align:baseline;background:#e4eee9;color:#25624e}
 .facts{margin-top:16px;background:#f4f7f9;border-color:#dbe3e8}
 .grounding details{overflow-wrap:anywhere}
+
+.chat-table{overflow-x:auto;margin:12px 0}
+.chat-table table{width:100%;border-collapse:collapse;font-size:13px}
+.chat-table th,.chat-table td{padding:8px 10px;border:1px solid #dbe3e8;text-align:left;vertical-align:top}
+.chat-table th{background:#f4f7f9}

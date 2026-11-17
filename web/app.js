@@ -40,18 +40,35 @@ function facts(el,items){
 }
 
 function events(el,items){
-  const calls=(items||[]).filter(e=>e.event==='tool_call');if(!calls.length)return;
+  const calls=(items||[]).filter(e=>e.event==='tool_call');
+  const steps=(items||[]).filter(e=>e.event==='model_turn'&&typeof e.replayed==='boolean');
+  if(!calls.length&&!steps.length)return;
   const log=document.createElement('section');log.className='tool-log';
-  const failed=calls.filter(e=>!e.result?.ok).length;
-  const heading=document.createElement('p');heading.className='tool-heading';
-  heading.textContent=`Вызовы инструментов: ${calls.length-failed} успешно`+(failed?`, ${failed} с ошибкой`:'');log.append(heading);
-  const names={list_inforesources:'Поиск ресурса',get_inforesource:'Чтение корня',get_subgraph:'Чтение фрагмента',count_graph:'Подсчёт фрагмента',create_folder:'Создание папки',delete_folder:'Удаление папки в корзину',search_inforesource:'Поиск внутри ресурса',compare_node_children:'Пересечение двух списков'};
+  if(steps.length){
+    const playback=document.createElement('p');playback.className='tool-heading';
+    playback.textContent=`Воспроизведено шагов модели: ${steps.filter(e=>e.replayed).length} из ${steps.length}`;
+    log.append(playback);
+  }
+  if(calls.length){
+    const failed=calls.filter(e=>!e.result?.ok).length;
+    const heading=document.createElement('p');heading.className='tool-heading';
+    heading.textContent=`Вызовы инструментов: ${calls.length-failed} успешно`+(failed?`, ${failed} с ошибкой`:'');log.append(heading);
+  }
+  const names={list_inforesources:'Поиск ресурса',list_fund_resources:'Поиск в «Моём Фонде»',search_fund_content:'Поиск по содержимому «Моего Фонда»',get_inforesource:'Чтение корня',get_subgraph:'Чтение фрагмента',count_graph:'Подсчёт фрагмента',create_folder:'Создание папки',delete_folder:'Удаление папки в корзину',search_inforesource:'Поиск внутри ресурса',compare_node_children:'Пересечение двух списков',rank_records_by_percentage:'Рейтинг по процентному содержанию',analyze_gas_composition:'Анализ составов технологических газов'};
   for(const item of calls){
     const d=document.createElement('details'),s=document.createElement('summary'),p=document.createElement('pre');
     d.className=item.result?.ok?'tool-ok':'tool-error';
     s.textContent=(item.result?.ok?'✓ ':'! ')+(names[item.name]||item.name)+(item.result?.ok?' — выполнено':' — запрос отклонён');
     d.append(s);
     if(!item.result?.ok){const hint=document.createElement('p');hint.textContent=[item.result?.error?.message,item.result?.error?.hint].filter(Boolean).join(' ');d.append(hint);}
+    if(item.name==='search_inforesource'&&item.result?.ok){
+      const {resource,query,total_matches,scanned_nodes,requested_depth}=item.result.data;
+      const scope=document.createElement('p');
+      scope.className='scope';
+      scope.textContent=resource.path+' · «'+query+'» · глубина '+requested_depth+
+        ' · совпадений '+total_matches+' среди '+scanned_nodes+' узлов';
+      d.append(scope);
+    }
     p.textContent=JSON.stringify({tool:item.name,arguments:item.arguments,result:item.result},null,2);d.append(p);log.append(d);
   }
   el.append(log);
@@ -61,7 +78,8 @@ async function status(){
   try{
     const r=await fetch('/api/status');if(!r.ok)throw Error();const s=await r.json();token=s.token;
     $('#status').textContent=`${s.model}\n${s.source==='snapshot'?'Сохранённый корень':s.source==='live'?'Живой API':'Режим MCP-сервера'}\n${s.model_configured?'Параметры модели заданы':'Ожидается API-ключ в терминале'}`;
-    if(s.generation?.deterministic)$('#status').textContent+='\nВоспроизводимый режим · seed '+s.generation.seed;
+    if(s.mcp_transport)$('#status').textContent+='\nMCP · '+(s.mcp_transport==='external_http'?'внешний HTTP':'встроенный '+s.mcp_transport);
+    if(s.generation?.deterministic)$('#status').textContent+='\nВоспроизводимый режим'+(s.provider==='openai'?'':' · seed '+s.generation.seed);
     $('#status').style.whiteSpace='pre-line';
   }catch{$('#status').textContent='Сервер недоступен. Проверьте терминал.';}
 }
@@ -70,7 +88,7 @@ async function send(question,action=''){
   if(busy||!question.trim())return;
   busy=true;$('#send').disabled=true;$('#reset').disabled=true;
   message('user',question);$('#question').value='';
-  const answer=message('assistant',action==='list_materials'?'Читаю каталог MCP…':'Модель обрабатывает запрос…');
+  const answer=message('assistant',action==='list_materials'?'Читаю каталог MCP…':'Обрабатываю запрос…');
   const waitingTop=history.scrollTop;
   let followReply=true,preservedTop=waitingTop;
   try{
@@ -79,8 +97,8 @@ async function send(question,action=''){
     preservedTop=history.scrollTop;followReply=Math.abs(preservedTop-waitingTop)<8;
     renderChatMarkdown(answer.querySelector('.content'),data.answer||data.error||'Не удалось получить ответ.');
     if(!r.ok)answer.classList.add('error');
-    grounding(answer,data.grounding,data.events);
-    comparison(answer,data.events);facts(answer,data.events);events(answer,data.events);
+    grounding(answer,data.grounding);
+    comparison(answer,data.events);ranking(answer,data.events);facts(answer,data.events);events(answer,data.events);
   }catch{
     answer.querySelector('.content').textContent='Соединение прервано. Ответ не подтверждён; начните новый диалог перед повтором.';answer.classList.add('error');
   }finally{
@@ -104,13 +122,8 @@ $('#reset').addEventListener('click',async()=>{
 });
 status();
 
-function grounding(el,audit,items){
+function grounding(el,audit){
   if(!audit)return;
-  const calls=(items||[]).filter(e=>e.event==='tool_call');
-  const folderOperations={create_folder:'created',delete_folder:'moved_to_trash'};
-  const onlyConfirmedFolderChanges=calls.length>0&&calls.every(e=>
-    e.result?.ok&&folderOperations[e.name]&&e.result.data?.operation===folderOperations[e.name]);
-  if(audit.status==='uncited'&&onlyConfirmedFolderChanges)return;
   const panel=document.createElement('section');panel.className='grounding '+audit.status;
   const title=document.createElement('strong');
   title.textContent=audit.status==='cited'?'ССЫЛКИ НА ЗАПИСИ ПРОВЕРЕНЫ':'ВЫВОД НЕ ПОДТВЕРЖДЁН ССЫЛКАМИ';
@@ -120,11 +133,13 @@ function grounding(el,audit,items){
     const d=document.createElement('details'),summary=document.createElement('summary');
     summary.textContent='['+source.evidence_id+'] '+source.trail.join(' → ');
     const provenance=document.createElement('p');
+    const sourceLabel={live_api:'Живой API IACPaaS',saved_snapshot:'Сохранённый снимок IACPaaS'}[source.source]||source.source;
     provenance.textContent=source.resource.title+' · '+source.resource.path+' · '+
-      (source.source==='live_api'?'Живой API':'Сохранённый снимок')+' · Глубина '+source.requested_depth;
-    const locator=document.createElement('p');locator.textContent='Указатель в экспорте: '+(source.pointer||'(корень)');
+      sourceLabel+' · Глубина '+source.requested_depth;
+    const locator=document.createElement('p');locator.textContent='Указатель в данных: '+(source.pointer||'(корень)');
     const raw=document.createElement('pre');raw.textContent=JSON.stringify({fields:source.fields,children:source.children,children_truncated:source.children_truncated},null,2);
-    d.append(summary,provenance,locator,raw);panel.append(d);targets.set(source.evidence_id,d);
+    d.append(summary,provenance,locator);
+    d.append(raw);panel.append(d);targets.set(source.evidence_id,d);
   }
   el.append(panel);
   // Turn existing evidence markers into local controls, never into model-supplied URLs.
@@ -164,4 +179,25 @@ function comparison(el,items){
   const scope=document.createElement('p');scope.textContent=data.rule+' Результат относится только к выбранным спискам.';
   if(!data.common.length){const empty=document.createElement('p');empty.textContent='В этих двух списках совпадающих меток не найдено.';list.append(empty);}
   panel.append(title,paths,list,scope);el.append(panel);
+}
+
+function ranking(el,items){
+  const found=(items||[]).filter(e=>e.event==='tool_call'&&e.name==='rank_records_by_percentage'&&e.result?.ok).at(-1);
+  if(!found)return;
+  const data=found.result.data,panel=document.createElement('section');panel.className='comparison';
+  const title=document.createElement('strong');title.textContent='РЕЙТИНГ ИЗ IACPAAS';
+  const scope=document.createElement('p');
+  const bases={volume:'объёмная',mass:'массовая',mole:'молярная'};
+  scope.textContent=data.group.trail.join(' → ')+' · '+bases[data.percent_basis]+' доля · записей с числом '+data.matched_records+' · пропущено '+data.skipped_records+' · глубина '+data.requested_depth;
+  const list=document.createElement('ol');
+  for(const row of data.ranking){
+    const li=document.createElement('li');
+    li.textContent=row.record.trail.at(-1)+' — '+row.percent.replace('.',',')+' %';
+    const details=document.createElement('details'),summary=document.createElement('summary'),source=document.createElement('pre');
+    summary.textContent='Состав и исходная доля';
+    source.textContent=JSON.stringify({состав:row.composition,доля:row.percentage},null,2);
+    details.append(summary,source);li.append(details);
+    list.append(li);
+  }
+  panel.append(title,scope,list);el.append(panel);
 }
