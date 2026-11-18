@@ -15,12 +15,14 @@ try {
         & py -3 -m venv "$PSScriptRoot\.venv"
     } elseif (Get-Command python -ErrorAction SilentlyContinue) {
         & python -m venv "$PSScriptRoot\.venv"
-    } else { throw 'Python 3.10 or newer is required.' }
+    } else { throw 'Python 3.11 or newer is required. Python 3.12 is recommended.' }
     if ($LASTEXITCODE -ne 0) { throw 'Could not create Python environment.' }
+    & $projectPython -c 'import sys; sys.exit(sys.version_info < (3, 11))'
+    if ($LASTEXITCODE -ne 0) { throw 'This project requires Python 3.11 or newer. Install Python 3.12 and rerun setup.ps1.' }
     & $projectPython -m pip install -r "$PSScriptRoot\requirements-lock.txt"
     if ($LASTEXITCODE -ne 0) { throw 'Could not install project dependencies.' }
 } finally {
     $env:TEMP = $previousTemp
     $env:TMP = $previousTmp
 }
-Write-Output 'Setup complete. Run: .\run.ps1 smoke'
+Write-Output 'Setup complete. See README.md for launch commands.'

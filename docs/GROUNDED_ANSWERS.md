@@ -69,7 +69,7 @@ get_subgraph/count_graph допускают только пустой start; д�
 Перезапустите MCP и веб-чат, обновите страницу Ctrl+F5 и начните новый диалог.
 Работающие процессы продолжают использовать старый код.
 
-    .\run.ps1 serve --transport http --mode live --login
+    .\run.ps1 serve --transport http --mode live --login --fund-login
 
 В другом терминале используйте прежнюю команду web с выбранной моделью и
 --mcp-url http://127.0.0.1:8765/mcp.

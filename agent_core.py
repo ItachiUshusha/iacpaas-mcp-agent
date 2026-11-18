@@ -23,6 +23,14 @@ ALLOWED_TOOLS = READ_ONLY_TOOLS | WRITE_TOOLS
 COMPOSITION_QUERY = re.compile(r"(?:примес|состав|содержан|процент|доля|долю|чистот|на основе)", re.IGNORECASE)
 GAS_QUERY = re.compile(r"(?:газ|аргон|водород|гелий|гелия)", re.IGNORECASE)
 GAS_DATABASE = "База технологических газов"
+FUND_LIST_QUERY = re.compile(
+    r"(?:(?:покажи|перечисли|выведи|какие)\s+)?"
+    r"(?:базы(?:\s+данных)?|ресурсы|список\s+(?:баз|ресурсов))"
+    r"(?:\s+(?:тебе\s+)?(?:доступны|есть))?\s+"
+    r'(?:из\s+моего\s+фонда|в\s+[«"]?мо[её]м\s+фонде[»"]?|'
+    r'(?:в|из)\s+[«"]?мой\s+фонд[»"]?)[?!.]?',
+    re.IGNORECASE,
+)
 GAS_COMPARISON_QUERY = re.compile(
     r"(?:какие\s+)?общие\s+примеси\s+(?:(?:указаны|есть)\s+)?у\s+газов\s+на\s+основе\s+"
     r"(?P<base>[^\W\d_]+)\s+и\s+(?P<other>[^\W\d_]+)[?.]?"
@@ -263,6 +271,45 @@ class Agent:
         self.trace.add("model_turn", tool_calls=len(turn.calls), **position)
         return turn
 
+    async def list_current_fund(self):
+        async def read_fund(parent):
+            name = "list_fund_resources"
+            arguments = {"parent": parent, "limit": 50}
+            result = await self.execute(Call(name, name, arguments))
+            self.trace.add("tool_call", name=name, arguments=arguments, result=result)
+            return result
+
+        root = await read_fund("")
+        result = root
+        if not root["ok"] and root["error"]["code"] == "UPSTREAM_ERROR":
+            result = await read_fund("Загрузки")
+        if not result["ok"]:
+            if result is not root:
+                return ("Не удалось прочитать корень «Моего Фонда» и папку «Загрузки»."
+                        "\n\nПроверьте, открываются ли они под вашей учётной записью на сайте IACPaaS. "
+                        "Подробности по обоим запросам есть в журнале вызовов.")
+            error = result["error"]
+            details = " ".join(filter(None, (error["message"], error.get("hint"))))
+            return f"Не удалось получить список «Моего Фонда» ({error['code']}). {details}"
+
+        data = result["data"]
+        resources = data["resources"]
+        lines = ["**Мой Фонд IACPaaS**"]
+        if data["parent"]:
+            lines.append(f"Прочитана папка «{data['parent']}». Корень фонда сейчас недоступен для чтения.")
+        if resources:
+            lines += ["", f"Ресурсов в ответе MCP — **{len(resources)}**.", ""]
+            lines.extend(f"- {row['title']} (путь `{row['path']}`)" for row in resources)
+        else:
+            lines.extend(("", "В прочитанных папках ресурсов не найдено."))
+        if data["truncated"]:
+            lines.extend(("", "Список ограничен лимитом чтения MCP."))
+        if data["skipped_folders"]:
+            skipped = ", ".join(f"«{path}»" for path in data["skipped_folders"])
+            lines.extend(("", f"Не удалось прочитать папки {skipped}."))
+        lines.extend(("", "Источник — текущий вызов `list_fund_resources`."))
+        return "\n".join(lines)
+
     async def compare_gas_classes(self, base, other):
         async def run(name, arguments):
             result = await self.execute(Call(name, name, arguments))
@@ -363,6 +410,12 @@ class Agent:
         self.user_request = question
         self.trace.add("user", text=question)
         self.model.add_user(question)
+        if "list_fund_resources" in self.tools and FUND_LIST_QUERY.fullmatch(question.strip()):
+            answer = await self.list_current_fund()
+            self.model.add_assistant(answer)
+            self.last_grounding = None
+            self.trace.add("assistant", text=answer)
+            return answer
         comparison = GAS_COMPARISON_QUERY.fullmatch(question.strip())
         if comparison and {"list_inforesources", "analyze_gas_composition"} <= self.tools.keys():
             answer, evidence = await self.compare_gas_classes(**comparison.groupdict())

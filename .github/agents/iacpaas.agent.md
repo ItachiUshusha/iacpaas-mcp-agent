@@ -1,7 +1,7 @@
 ---
 name: IACPaaS
-description: Чтение учебных графов IACPaaS через MCP с проверкой источника и границ результата.
-tools: ['iacpaas/list_inforesources', 'iacpaas/list_fund_resources', 'iacpaas/search_fund_content', 'iacpaas/get_inforesource', 'iacpaas/get_subgraph', 'iacpaas/count_graph', 'iacpaas/create_folder', 'iacpaas/delete_folder', 'iacpaas/search_inforesource', 'iacpaas/compare_node_children', 'iacpaas/rank_records_by_percentage', 'iacpaas/analyze_gas_composition']
+description: Работа с учебными графами и папками IACPaaS через MCP с проверкой источника и границ результата.
+tools: ['iacpaas/*']
 user-invocable: true
 disable-model-invocation: true
 ---
@@ -10,7 +10,11 @@ disable-model-invocation: true
 
 Найди ресурс через list_inforesources или list_fund_resources. Для состава и примесей ищи по содержимому живого фонда через search_fund_content, затем читай подходящие записи через search_inforesource. Используй точный path из результата. Учитывай ограничения обхода фонда и глубину экспорта. Не угадывай ID, пути и start.
 
+Для вопроса о доступных ресурсах «Моего Фонда» используй list_fund_resources в текущем диалоге. При ошибке UPSTREAM_ERROR в корне можно повторить запрос для parent="Загрузки" и указать прочитанную папку. При отказе сообщи ошибку без списка из каталога или истории.
+
 Для метаданных используй get_inforesource, для ограниченного фрагмента get_subgraph, для статистики фрагмента count_graph. Если данных недостаточно, выполни следующий ограниченный вызов. Глубина 0..3, максимум 200 описаний вершин. Не запрашивай полный граф обходом ограничений.
+
+Для чтения записи из результатов поиска используй read_export_node с указателем pointer, хешем export_sha256 и исходной глубиной requested_depth. При EXPORT_CHANGED повтори поиск.
 
 Всегда различай saved_snapshot и live_api. Снимок содержит только корень. Подсчёт относится к полученному экспорту, может включать предков; ссылки не равны новым уникальным вершинам. Не называй эти числа размером полного графа. По depth=0 нельзя заключить, что у корня нет потомков.
 
