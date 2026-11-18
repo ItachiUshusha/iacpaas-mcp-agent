@@ -4,7 +4,6 @@
     "2026-10-20",
     "2026-10-21"
   ],
-  "new_api_export_verified": true,
   "subgroup_assignment": "No separate topic communicated; pair selected for initial study",
   "ontology": {
     "title": "Онтология базы свойств материалов",
@@ -62,6 +61,5 @@
     "All resources studied",
     "Numerical density of a specific alloy",
     "Working real LLM agent"
-  ],
-  "api_verification_report": "../../evidence/verification-materials-live.json"
+  ]
 }
