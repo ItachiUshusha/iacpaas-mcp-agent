@@ -28,6 +28,21 @@ class Fault(Exception):
         super().__init__(message)
 
 
+def validate_concept_start(start: str):
+    """Export JSON Pointers are not platform concept paths."""
+    pointer = start.removeprefix("#")
+    if pointer in {"/root", "/successors"} or pointer.startswith(("/root/", "/successors/")):
+        raise Fault("INVALID_START_PATH", "В start передан JSON Pointer вместо пути вершины IACPaaS.",
+                    "Не переносите pointer из поисковой выдачи в start. Для составов используйте "
+                    "analyze_gas_composition, для поиска — search_inforesource. "
+                    "Для чтения от корня передайте start=''; непустой start требует подтверждённого пути IACPaaS.")
+    if start and (not start.endswith(";") or "://" in start):
+        raise Fault("INVALID_START_PATH", "В start передана неподтверждённая цепочка названий.",
+                    "Путь вершины IACPaaS имеет специальный формат с окончанием ';'. "
+                    "Не собирайте его из trail. Для найденной записи используйте read_export_node "
+                    "с pointer, export_sha256 и той же глубиной из поиска; для корня оставьте start пустым.")
+
+
 class Error(Model):
     code: str
     message: str
@@ -128,6 +143,19 @@ class Evidence(Model):
     fields: dict
     children: list[dict]
     children_truncated: bool
+
+
+class ExportNodeReport(Model):
+    resource: Resource
+    source: Literal["live_api", "saved_snapshot"]
+    requested_depth: int
+    export_sha256: str
+    complete_graph: Literal[False] = False
+    selected: Evidence
+    descendants: list[Evidence]
+    requested_levels: int
+    truncated: bool
+    warnings: list[str]
 
 
 class SearchReport(Model):
@@ -427,6 +455,7 @@ class Service:
         return FolderChange(path=path, operation="moved_to_trash")
 
     def read(self, selection: Selection) -> Graph:
+        validate_concept_start(selection.start)
         resource = self.resource_for_read(selection.path)
         if self.mode == "snapshot":
             if selection.depth != 0 or selection.start:
@@ -481,6 +510,13 @@ class Service:
         resource, raw = self.search_raw(path, depth)
         return search_export(resource, raw, query, depth, limit,
                              "live_api" if self.mode == "live" else "saved_snapshot")
+
+    def read_export_node(self, path: str, pointer: str, export_sha256: str,
+                         depth: int, levels: int, max_nodes: int) -> ExportNodeReport:
+        from retrieval import read_node_export
+        resource, raw = self.search_raw(path, depth)
+        return read_node_export(resource, raw, pointer, export_sha256, depth, levels, max_nodes,
+                                "live_api" if self.mode == "live" else "saved_snapshot")
 
     def search_fund_content(self, parent: str, queries: list[str], depth: int = 10) -> FundSearchReport:
         from retrieval import bounded, index_export, normalize, search_index

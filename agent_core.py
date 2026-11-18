@@ -10,11 +10,12 @@ from uuid import uuid4
 
 import jsonschema
 
-from answer_evidence import collect_evidence, audit_answer
+from answer_evidence import collect_evidence, audit_answer, revalidate_evidence
+from domain import Fault, validate_concept_start
 
 READ_TOOLS = {"list_inforesources", "get_inforesource", "get_subgraph", "count_graph"}
 SEARCH_TOOLS = {"search_inforesource", "compare_node_children", "rank_records_by_percentage",
-                "search_fund_content", "analyze_gas_composition"}
+                "search_fund_content", "analyze_gas_composition", "read_export_node"}
 DISCOVERY_TOOLS = {"list_inforesources", "list_fund_resources", "search_fund_content"}
 READ_ONLY_TOOLS = READ_TOOLS | SEARCH_TOOLS | DISCOVERY_TOOLS
 WRITE_TOOLS = {"create_folder", "delete_folder"}
@@ -149,6 +150,16 @@ class Agent:
             return failure("INVALID_ARGUMENT", "Аргументы не соответствуют JSON Schema.", "Исправьте аргументы по схеме; глубина 0..3, max_nodes 1..200.")
         if call.name in READ_ONLY_TOOLS - DISCOVERY_TOOLS and arguments.get("path") not in self.known_paths:
             return failure("PATH_NOT_DISCOVERED", "Путь ещё не подтверждён каталогом или фондом.", "Используйте точный path из list_inforesources или list_fund_resources.")
+        if call.name in {"get_subgraph", "count_graph"}:
+            try:
+                validate_concept_start(arguments.get("start", ""))
+            except Fault as exc:
+                return failure(exc.code, exc.message, exc.hint)
+            if arguments.get("start"):
+                return failure("UNCONFIRMED_START", "Агент не передаёт придуманные пути вершин в IACPaaS.",
+                               "Оставьте start пустым для чтения корня. Найденную запись читайте через "
+                               "read_export_node с pointer и export_sha256, если инструмент доступен; "
+                               "для составов газов также доступен analyze_gas_composition.")
         if call.name in WRITE_TOOLS:
             if not matches_folder_request(self.user_request, call.name, arguments):
                 return failure("CONFIRMATION_REQUIRED", "Для изменения нужна прямая команда пользователя с точным путём папки.",
@@ -178,17 +189,48 @@ class Agent:
         return result
 
     def finish(self, text, evidence=None):
-        self.last_grounding = audit_answer(text, self.evidence if evidence is None else evidence)
+        self.last_grounding = audit_answer(text, self.evidence if evidence is None else evidence, self.evidence)
         self.trace.add("answer_grounding", **self.last_grounding)
         self.trace.add("assistant", text=text)
         return text
 
+    def request_completion(self, instruction):
+        # Recovery must retain the actual task, rather than replace it with a generic search.
+        self.model.add_user(instruction + "\n\nИсходный вопрос пользователя:\n" + self.user_request)
+
+    def citation_feedback(self, text, evidence):
+        ledger = self.evidence if evidence is None else evidence
+        audit = audit_answer(text, ledger, self.evidence)
+        if not audit["invalid_citations"]:
+            return None
+        self.trace.add("answer_repair", invalid_citations=audit["invalid_citations"],
+                       historical_citations=audit["historical_citations"])
+        invalid = ", ".join(audit["invalid_citations"][:20])
+        available = ", ".join(sorted(ledger)[:80]) or "нет"
+        return (f"Исправь ответ: ссылки {invalid} не подтверждены для текущего вопроса. "
+                "Ссылки из истории требуют повторного чтения соответствующего источника. "
+                "При изменении данных используй новые значения и новые ссылки. "
+                "Не удаляй ссылки, сохраняя неподтверждённые утверждения. "
+                "Если составы ещё не прочитаны, получи их через analyze_gas_composition "
+                "или подходящий поиск по конкретным компонентам вопроса. "
+                f"Подтверждённые ссылки текущего вопроса: {available}.")
+
     async def model_step(self, tools, **position):
+        definitions = []
+        for tool in tools:
+            if tool.get("name") in {"get_subgraph", "count_graph"}:
+                schema = tool["inputSchema"]
+                properties = {**schema["properties"], "start": {"type": "string", "enum": [""], "default": ""}}
+                tool = {**tool, "inputSchema": {**schema, "properties": properties},
+                        "description": "Read/count from the resource root with start=''. "
+                                       "For a found record use read_export_node if available; "
+                                       "for gas compositions use analyze_gas_composition. " + tool.get("description", "")}
+            definitions.append(tool)
         if self.replay is not None and not self.write_in_turn:
-            turn, replayed = await self.replay.step(self.model, tools)
+            turn, replayed = await self.replay.step(self.model, definitions)
             position["replayed"] = replayed
         else:
-            turn = await self.model.step(tools)
+            turn = await self.model.step(definitions)
         self.write_in_turn |= any(call.name in WRITE_TOOLS for call in turn.calls)
         self.trace.add("model_turn", tool_calls=len(turn.calls), **position)
         return turn
@@ -228,8 +270,8 @@ class Agent:
         return "\n".join(lines), evidence
 
     async def finish_reads(self, searches, evidence=None):
-        self.model.add_user(
-            "Заверши ответ на предыдущий вопрос по уже полученным данным IACPaaS. "
+        self.request_completion(
+            "Заверши ответ на исходный вопрос по уже полученным данным IACPaaS. "
             "Используй ссылки [E...] на записи или результаты поиска. "
             "Ограничь вывод проверенными фрагментами. Если искомые данные не получены, "
             "укажи, что найдено и чего не хватает для ответа."
@@ -240,6 +282,20 @@ class Agent:
             turn = None
         if turn is not None:
             if not turn.calls and turn.text.strip():
+                feedback = self.citation_feedback(turn.text, evidence)
+                if feedback:
+                    self.request_completion(feedback + " Новые инструменты недоступны; "
+                                            "оставь только подтверждённые выводы и укажи недостающие данные.")
+                    try:
+                        corrected = await self.model_step([], final=True, citation_repair=True)
+                    except AgentError:
+                        corrected = None
+                    if corrected is not None and not corrected.calls and corrected.text.strip():
+                        return self.finish(corrected.text, evidence)
+                    if corrected is not None:
+                        for call in corrected.calls:
+                            self.model.add_result(call, failure("READ_FINISHED", "Поиск завершён.",
+                                                                "Инструменты больше недоступны."))
                 return self.finish(turn.text, evidence)
             for call in turn.calls:
                 self.model.add_result(call, failure("READ_FINISHED", "Поиск завершён.", "Подведи итог по результатам."))
@@ -291,7 +347,7 @@ class Agent:
         no_live_data = ("Для этого вопроса не получены записи составов из IACPaaS. "
                         "Проверьте журнал вызовов и доступ к ресурсу с составами.")
         retried_without_data = False
-        fund_search_attempted = False
+        retried_citations = False
         for round_index in range(self.max_rounds):
             # The model must discover exact paths before being offered graph reads.
             visible = [self.tools[name] for name in sorted(self.tools)
@@ -300,18 +356,23 @@ class Agent:
             if not turn.calls:
                 if not turn.text.strip():
                     raise AgentError("Модель не вернула ни ответ, ни вызов инструмента.")
-                if needs_live_data and (not successful_read or (
-                    "search_fund_content" in self.tools and not fund_search_attempted
-                )):
+                if needs_live_data and not successful_read:
                     if not retried_without_data and round_index + 1 < self.max_rounds:
                         retried_without_data = True
-                        self.model.add_user(
-                            "Проверь содержимое «Моего Фонда» через search_fund_content, если инструмент доступен. "
-                            "Передай названия газов и 'примес' отдельными запросами. "
-                            "Если поиск по фонду недоступен, читай подходящие записи через search_inforesource.")
+                        self.request_completion(
+                            "Для ответа нужны свежие данные IACPaaS по исходному вопросу. "
+                            "Для составов моногазов используй analyze_gas_composition после нахождения базы. "
+                            "В остальных случаях ищи конкретные компоненты и ограничения из вопроса. "
+                            "Не заменяй задачу общим поиском слова «примесь» или отчётом по всем ресурсам.")
                         continue
                     if not successful_read:
                         return self.finish(no_live_data, turn_evidence)
+                if not retried_citations and round_index + 1 < self.max_rounds:
+                    feedback = self.citation_feedback(turn.text, turn_evidence)
+                    if feedback:
+                        retried_citations = True
+                        self.request_completion(feedback)
+                        continue
                 return self.finish(turn.text, turn_evidence)
             if calls + len(turn.calls) > self.max_calls:
                 if not successful_read:
@@ -325,14 +386,13 @@ class Agent:
                 break
             for call in turn.calls:
                 result = await self.execute(call)
-                fund_search_attempted |= call.name == "search_fund_content"
-                fund_search_attempted |= call.name == "analyze_gas_composition" and result.get("ok", False)
                 calls += 1
                 self.trace.add("tool_call", name=call.name, arguments=call.arguments, result=result)
                 refs = collect_evidence(result.get("data")) if result.get("ok") else []
                 self.evidence.update({r["evidence_id"]: r for r in refs})
                 if turn_evidence is not None:
-                    turn_evidence.update({r["evidence_id"]: r for r in refs if r["source"] == "live_api"})
+                    fresh = {r["evidence_id"]: r for r in refs if r["source"] == "live_api"}
+                    turn_evidence.update(revalidate_evidence(self.evidence, fresh))
                 if refs and call.name in READ_TOOLS | SEARCH_TOOLS and (
                     not needs_live_data or any(ref["source"] == "live_api" for ref in refs)
                 ):

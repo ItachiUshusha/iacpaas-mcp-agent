@@ -5,7 +5,7 @@ import re
 import unicodedata
 from decimal import Decimal
 
-from domain import ComparisonReport, Evidence, Fault, MAX_RESULT_BYTES, RankedRecord, RankingReport, SearchReport
+from domain import ComparisonReport, Evidence, ExportNodeReport, Fault, MAX_RESULT_BYTES, RankedRecord, RankingReport, SearchReport
 
 FIELDS = ("id", "name", "value", "meta", "type", "valtype", "link", "link_id", "comment")
 SEARCH_FIELDS = ("name", "value", "meta", "link", "comment")
@@ -86,6 +86,38 @@ def search_index(resource, rows, digest, query, depth, limit, source, child_limi
         export_sha256=digest, query=query, scanned_nodes=len(rows), total_matches=len(matched),
         matches_truncated=len(matched) > limit, matches=[evidence(rows, p, digest, child_limit) for p in matched[:limit]],
         warnings=WARNINGS))
+
+
+def read_node_export(resource, raw, pointer, expected_digest, depth, levels, max_nodes, source):
+    """Read a bounded subtree from a freshly verified export, without guessing API paths."""
+    rows, digest = index_export(raw)
+    if digest != expected_digest:
+        raise Fault("EXPORT_CHANGED", "Экспорт изменился после поиска.",
+                    "Повторите поиск и используйте pointer и хеш из нового результата.")
+    if pointer not in rows:
+        raise Fault("INVALID_ARGUMENT", "Указатель не найден в подтверждённом экспорте.",
+                    "Скопируйте pointer из search_inforesource или analyze_gas_composition без изменений.")
+    selected = []
+    truncated = False
+
+    def visit(current, level):
+        nonlocal truncated
+        if len(selected) >= max_nodes:
+            raise Fault("RESULT_LIMIT", "Поддерево превышает лимит вершин.",
+                        "Уменьшите levels или выберите более глубокий pointer из поиска.")
+        selected.append(evidence(rows, current, digest))
+        children = rows[current][0].get("successors", [])
+        if level == levels:
+            truncated |= bool(children)
+            return
+        for index, _ in enumerate(children):
+            visit(f"{current}/successors/{index}", level + 1)
+
+    visit(pointer, 0)
+    return bounded(ExportNodeReport(resource=resource, source=source, requested_depth=depth,
+                                   export_sha256=digest, selected=selected[0], descendants=selected[1:],
+                                   requested_levels=levels, truncated=truncated,
+                                   warnings=[*WARNINGS, "Потомки ограничены levels и глубиной исходного экспорта."]))
 
 
 def compare_export(resource, raw, left, right, expected_digest, depth, source):

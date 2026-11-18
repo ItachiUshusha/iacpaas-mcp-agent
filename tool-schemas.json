@@ -628,7 +628,7 @@
   {
     "name": "count_graph",
     "title": null,
-    "description": "Count occurrences, defined IDs and links in a bounded export, including ancestors. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges.",
+    "description": "Count occurrences, defined IDs and links in a bounded export, including ancestors. start must be empty or a confirmed IACPaaS concept path, never an export JSON Pointer. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges.",
     "inputSchema": {
       "properties": {
         "path": {
@@ -1518,7 +1518,7 @@
   {
     "name": "get_subgraph",
     "title": null,
-    "description": "Read a bounded universal export, depth 0..3. Empty start means resource root; otherwise use a known IACPaaS concept path. Ancestors may be included. Snapshot mode has only depth=0.",
+    "description": "Read a bounded universal export from the root with start='', depth 0..3. For a record found in search use read_export_node with its pointer and export_sha256. Never build start from trail labels or JSON Pointers. A nonempty start is only for an explicitly confirmed platform concept path ending in ';'. Ancestors may be included. Snapshot mode has only depth=0.",
     "inputSchema": {
       "properties": {
         "path": {
@@ -2571,6 +2571,272 @@
         "ok"
       ],
       "title": "Result[RankingReport]",
+      "type": "object"
+    },
+    "icons": null,
+    "annotations": {
+      "title": null,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "meta": null,
+    "execution": null
+  },
+  {
+    "name": "read_export_node",
+    "title": null,
+    "description": "Read a selected record and its descendants using pointer, export_sha256 and requested_depth from search_inforesource or analyze_gas_composition. No platform start path is needed. The same-depth export is read again; changed hashes fail with EXPORT_CHANGED. Root pointer is ''. levels limits descendant depth, max_nodes limits size; truncated means descendants were cut by levels. Does not resolve links.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 2048,
+          "title": "Pointer",
+          "type": "string"
+        },
+        "export_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Export Sha256",
+          "type": "string"
+        },
+        "depth": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Depth",
+          "type": "integer"
+        },
+        "levels": {
+          "default": 6,
+          "maximum": 6,
+          "minimum": 0,
+          "title": "Levels",
+          "type": "integer"
+        },
+        "max_nodes": {
+          "default": 200,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Nodes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "pointer",
+        "export_sha256"
+      ],
+      "title": "read_export_nodeArguments",
+      "type": "object"
+    },
+    "outputSchema": {
+      "$defs": {
+        "Error": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "title": "Code",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "hint": {
+              "title": "Hint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "hint"
+          ],
+          "title": "Error",
+          "type": "object"
+        },
+        "Evidence": {
+          "additionalProperties": false,
+          "properties": {
+            "evidence_id": {
+              "title": "Evidence Id",
+              "type": "string"
+            },
+            "pointer": {
+              "title": "Pointer",
+              "type": "string"
+            },
+            "trail": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Trail",
+              "type": "array"
+            },
+            "fields": {
+              "additionalProperties": true,
+              "title": "Fields",
+              "type": "object"
+            },
+            "children": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "Children",
+              "type": "array"
+            },
+            "children_truncated": {
+              "title": "Children Truncated",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "evidence_id",
+            "pointer",
+            "trail",
+            "fields",
+            "children",
+            "children_truncated"
+          ],
+          "title": "Evidence",
+          "type": "object"
+        },
+        "ExportNodeReport": {
+          "additionalProperties": false,
+          "properties": {
+            "resource": {
+              "$ref": "#/$defs/Resource"
+            },
+            "source": {
+              "enum": [
+                "live_api",
+                "saved_snapshot"
+              ],
+              "title": "Source",
+              "type": "string"
+            },
+            "requested_depth": {
+              "title": "Requested Depth",
+              "type": "integer"
+            },
+            "export_sha256": {
+              "title": "Export Sha256",
+              "type": "string"
+            },
+            "complete_graph": {
+              "const": false,
+              "default": false,
+              "title": "Complete Graph",
+              "type": "boolean"
+            },
+            "selected": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "descendants": {
+              "items": {
+                "$ref": "#/$defs/Evidence"
+              },
+              "title": "Descendants",
+              "type": "array"
+            },
+            "requested_levels": {
+              "title": "Requested Levels",
+              "type": "integer"
+            },
+            "truncated": {
+              "title": "Truncated",
+              "type": "boolean"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Warnings",
+              "type": "array"
+            }
+          },
+          "required": [
+            "resource",
+            "source",
+            "requested_depth",
+            "export_sha256",
+            "selected",
+            "descendants",
+            "requested_levels",
+            "truncated",
+            "warnings"
+          ],
+          "title": "ExportNodeReport",
+          "type": "object"
+        },
+        "Resource": {
+          "additionalProperties": false,
+          "properties": {
+            "resource_id": {
+              "title": "Resource Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            },
+            "path": {
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource_id",
+            "title",
+            "path"
+          ],
+          "title": "Resource",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExportNodeReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "Result[ExportNodeReport]",
       "type": "object"
     },
     "icons": null,

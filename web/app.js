@@ -55,6 +55,7 @@ function events(el,items){
     heading.textContent=`Вызовы инструментов: ${calls.length-failed} успешно`+(failed?`, ${failed} с ошибкой`:'');log.append(heading);
   }
   const names={list_inforesources:'Поиск ресурса',list_fund_resources:'Поиск в «Моём Фонде»',search_fund_content:'Поиск по содержимому «Моего Фонда»',get_inforesource:'Чтение корня',get_subgraph:'Чтение фрагмента',count_graph:'Подсчёт фрагмента',create_folder:'Создание папки',delete_folder:'Удаление папки в корзину',search_inforesource:'Поиск внутри ресурса',compare_node_children:'Пересечение двух списков',rank_records_by_percentage:'Рейтинг по процентному содержанию',analyze_gas_composition:'Анализ составов технологических газов'};
+  names.read_export_node='Чтение найденной записи';
   for(const item of calls){
     const d=document.createElement('details'),s=document.createElement('summary'),p=document.createElement('pre');
     d.className=item.result?.ok?'tool-ok':'tool-error';
@@ -128,6 +129,12 @@ function grounding(el,audit){
   const title=document.createElement('strong');
   title.textContent=audit.status==='cited'?'ССЫЛКИ НА ЗАПИСИ ПРОВЕРЕНЫ':'ВЫВОД НЕ ПОДТВЕРЖДЁН ССЫЛКАМИ';
   const note=document.createElement('p');note.textContent=audit.note;panel.append(title,note);
+  for(const [label,refs] of [
+    ['Требуют повторного чтения',audit.historical_citations],
+    ['Не найдены в полученных данных',audit.unknown_citations]
+  ]){
+    if(refs?.length){const warning=document.createElement('p');warning.textContent=label+': '+refs.map(ref=>'['+ref+']').join(', ');panel.append(warning);}
+  }
   const targets=new Map();
   for(const source of audit.sources||[]){
     const d=document.createElement('details'),summary=document.createElement('summary');
@@ -136,6 +143,7 @@ function grounding(el,audit){
     const sourceLabel={live_api:'Живой API IACPaaS',saved_snapshot:'Сохранённый снимок IACPaaS'}[source.source]||source.source;
     provenance.textContent=source.resource.title+' · '+source.resource.path+' · '+
       sourceLabel+' · Глубина '+source.requested_depth;
+    if(source.revalidated)provenance.textContent+=' · Источник из истории подтверждён повторным чтением того же экспорта';
     const locator=document.createElement('p');locator.textContent='Указатель в данных: '+(source.pointer||'(корень)');
     const raw=document.createElement('pre');raw.textContent=JSON.stringify({fields:source.fields,children:source.children,children_truncated:source.children_truncated},null,2);
     d.append(summary,provenance,locator);
@@ -147,17 +155,19 @@ function grounding(el,audit){
   const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
   for(const text of nodes){
     if(text.parentElement.closest('pre,code,a,button'))continue;
-    const pattern=/\[(E[A-Za-z0-9]+)\]/g;
+    const pattern=/\[(E[A-Za-z0-9]+(?:\s*[,;]\s*E[A-Za-z0-9]+)*)\]/g;
     let found,offset=0;const fragment=document.createDocumentFragment();
     while((found=pattern.exec(text.nodeValue))){
       fragment.append(document.createTextNode(text.nodeValue.slice(offset,found.index)));
-      const target=targets.get(found[1]);
-      if(target){
-        const button=document.createElement('button');button.type='button';button.className='evidence-link';
-        button.textContent=found[0];button.title='Показать исходную запись';
-        button.onclick=()=>{target.open=true;target.scrollIntoView({block:'nearest',behavior:'smooth'});};
-        fragment.append(button);
-      }else fragment.append(document.createTextNode(found[0]));
+      for(const ref of found[1].split(/\s*[,;]\s*/)){
+        const target=targets.get(ref);
+        if(target){
+          const button=document.createElement('button');button.type='button';button.className='evidence-link';
+          button.textContent='['+ref+']';button.title='Показать исходную запись';
+          button.onclick=()=>{target.open=true;target.scrollIntoView({block:'nearest',behavior:'smooth'});};
+          fragment.append(button);
+        }else fragment.append(document.createTextNode('['+ref+']'));
+      }
       offset=pattern.lastIndex;
     }
     if(offset){fragment.append(document.createTextNode(text.nodeValue.slice(offset)));text.replaceWith(fragment);}

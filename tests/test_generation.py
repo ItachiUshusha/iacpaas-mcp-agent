@@ -46,6 +46,37 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bodies[0], bodies[1])
         self.assertEqual(json.loads(bodies[0])["options"], {"num_predict": 4096, "temperature": 0, "seed": 123})
 
+    async def test_plaintext_transport_error_has_safe_diagnostic_and_no_retry(self):
+        requests = []
+        def reject(request):
+            requests.append(request)
+            return httpx.Response(400, text="Invalid HTTP request received.")
+        with tempfile.TemporaryDirectory(dir=BASE) as tmp, patch("providers.MODEL_DIAGNOSTIC_DIR", Path(tmp)):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(reject)) as client:
+                model = CompatibleModel(client, "fixed-model", "private-key", "private-instructions", "https://example.com/api")
+                model.add_user("Private user question")
+                with self.assertRaisesRegex(AgentError, "HTTP 400"):
+                    await model.step([])
+            report = json.loads(next(Path(tmp).glob("model-error-*.json")).read_text(encoding="utf-8"))
+            self.assertEqual(report["path"], "/api/chat/completions")
+            self.assertEqual(report["error"]["code"], "invalid_http_request")
+            self.assertEqual(report["response"]["captured_bytes"], 30)
+            self.assertEqual(len(requests), 1)
+            self.assertNotIn("private-key", json.dumps(report))
+            self.assertNotIn("Private user question", json.dumps(report))
+
+    async def test_arbitrary_plaintext_error_is_not_saved_as_prompt_or_secret(self):
+        with tempfile.TemporaryDirectory(dir=BASE) as tmp, patch("providers.MODEL_DIAGNOSTIC_DIR", Path(tmp)):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+                    400, text="Private user question; private-key; private-instructions"))) as client:
+                model = CompatibleModel(client, "fixed-model", "private-key", "private-instructions", "https://example.com/api")
+                model.add_user("Private user question")
+                with self.assertRaises(AgentError):
+                    await model.step([])
+            report = next(Path(tmp).glob("model-error-*.json")).read_text(encoding="utf-8")
+            for secret in ("Private user question", "private-key", "private-instructions"):
+                self.assertNotIn(secret, report)
+
     async def test_compatible_pins_provider_and_sorts_tools(self):
         bodies = []
         def handler(request):

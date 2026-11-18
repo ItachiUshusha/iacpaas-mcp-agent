@@ -72,7 +72,7 @@ async def exercise(session, mode):
     assert set(schemas) == {"list_inforesources", "list_fund_resources", "get_inforesource", "get_subgraph",
                             "count_graph", "create_folder", "delete_folder", "search_inforesource",
                             "compare_node_children", "rank_records_by_percentage", "search_fund_content",
-                            "analyze_gas_composition"}
+                            "analyze_gas_composition", "read_export_node"}
     assert all(schemas.values()), "Every tool needs an output schema"
     traces = []
 

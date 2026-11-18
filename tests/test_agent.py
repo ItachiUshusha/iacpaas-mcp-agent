@@ -2,11 +2,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
 from agent_core import Agent, AgentError, Call, Trace, Turn
+from answer_evidence import collect_evidence
 from domain import BASE
 from providers import OpenAIModel, OllamaModel
 from smoke import connect
@@ -33,6 +34,16 @@ class ScriptedModel:
     async def step(self, tools):
         value = next(self.turns)
         return value(self.results) if callable(value) else value
+
+
+def live_search(reference="Enew", digest="same-export"):
+    return {"ok": True, "data": {
+        "resource": {"title": "База газов", "path": "Загрузки/База газов", "resource_id": "test"},
+        "source": "live_api", "requested_depth": 10, "export_sha256": digest,
+        "query": "N", "scanned_nodes": 12, "total_matches": 1, "matches_truncated": False,
+        "matches": [{"evidence_id": reference, "pointer": "/successors/0", "trail": ["Марка А", "N"],
+                     "fields": {"name": "N"}, "children": [], "children_truncated": False}]
+    }}
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
@@ -158,6 +169,130 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         answer = await agent.answer("Какие примеси у аргона?")
         self.assertIn("не получены записи", answer)
         self.assertNotIn("примесей нет", answer)
+
+    async def test_json_pointer_is_not_sent_to_mcp_as_start(self):
+        session = Mock()
+        session.call_tool = AsyncMock()
+        agent = Agent(session, None, self.trace)
+        agent.tools = {name: {"inputSchema": {"type": "object"}} for name in ("get_subgraph", "count_graph")}
+        agent.known_paths.add("Загрузки/База газов")
+        for name in agent.tools:
+            result = await agent.execute(Call("bad", name, {
+                "path": "Загрузки/База газов", "start": "/successors/0/successors/1", "depth": 3}))
+            self.assertEqual(result["error"]["code"], "INVALID_START_PATH")
+            self.assertIn("analyze_gas_composition", result["error"]["hint"])
+        session.call_tool.assert_not_awaited()
+
+    async def test_specific_read_does_not_force_unrelated_fund_search(self):
+        question = "Сравни ограничения содержания азота в двух марках аргона"
+        model = ScriptedModel([
+            Turn([Call("read", "search_inforesource", {"path": "Загрузки/База газов", "query": "N"})]),
+            Turn(text="Запись азота [Enew].")])
+        agent = Agent(None, model, self.trace)
+        agent.tools = {"search_fund_content": {}}
+        with patch.object(agent, "execute", return_value=live_search()) as execute:
+            answer = await agent.answer(question)
+        self.assertEqual(answer, "Запись азота [Enew].")
+        self.assertEqual(model.questions, [question])
+        execute.assert_awaited_once()
+        self.assertEqual(agent.last_grounding["status"], "cited")
+
+    async def test_label_trail_and_unconfirmed_platform_path_never_reach_mcp(self):
+        session = Mock()
+        session.call_tool = AsyncMock()
+        agent = Agent(session, None, self.trace)
+        agent.tools = {"get_subgraph": {"inputSchema": {"type": "object"}}}
+        agent.known_paths.add("Загрузки/База технологических газов")
+        trail = "База технологических газов/Моногазы/Газы на основе Аргона/Аргон газообразный высокой чистоты марка 6.0"
+        for start, expected in ((trail, "INVALID_START_PATH"), (trail + ";", "UNCONFIRMED_START")):
+            result = await agent.execute(Call("bad", "get_subgraph", {
+                "path": "Загрузки/База технологических газов", "start": start, "depth": 3}))
+            self.assertEqual(result["error"]["code"], expected)
+        session.call_tool.assert_not_awaited()
+
+    async def test_model_graph_schema_allows_only_resource_root(self):
+        offered = []
+        class CapturingModel(ScriptedModel):
+            async def step(self, tools):
+                offered.extend(tools)
+                return Turn(text="Корень ресурса доступен.")
+        async with connect("stdio", "snapshot", child_environment()) as session:
+            agent = Agent(session, CapturingModel([]), self.trace)
+            await agent.initialize()
+            agent.known_paths.add("Загрузки/Система единиц физических величин")
+            await agent.answer("Прочитай корень")
+        for name in ("get_subgraph", "count_graph"):
+            definition = next(t for t in offered if t["name"] == name)
+            self.assertEqual(definition["inputSchema"]["properties"]["start"]["enum"], [""])
+            self.assertNotIn("enum", agent.tools[name]["inputSchema"]["properties"]["start"])
+        self.assertIn("read_export_node", {t["name"] for t in offered})
+
+    async def test_identical_fresh_export_revalidates_previous_answer_sources(self):
+        model = ScriptedModel([
+            Turn([Call("read", "search_inforesource", {"path": "Загрузки/База газов", "query": "N"})]),
+            Turn(text="Примесь из предыдущей записи [Eold].")])
+        agent = Agent(None, model, self.trace)
+        old = live_search("Eold")["data"]
+        agent.evidence = {r["evidence_id"]: r for r in collect_evidence(old)}
+        with patch.object(agent, "execute", return_value=live_search()):
+            await agent.answer("Разбери состав ранее найденного аргона")
+        self.assertEqual(agent.last_grounding["status"], "cited")
+        source, = agent.last_grounding["sources"]
+        self.assertEqual(source["evidence_id"], "Eold")
+        self.assertTrue(source["revalidated"])
+        self.assertEqual(len(model.questions), 1)
+
+    async def test_changed_export_requires_corrected_answer_and_preserves_question(self):
+        question = "Сравни содержание азота в двух марках аргона"
+        model = ScriptedModel([
+            Turn([Call("read", "search_inforesource", {"path": "Загрузки/База газов", "query": "N"})]),
+            Turn(text="Устаревший предел [Eold]."),
+            Turn(text="Обновлённый предел [Enew].")])
+        agent = Agent(None, model, self.trace)
+        agent.evidence = {r["evidence_id"]: r for r in collect_evidence(live_search("Eold")["data"])}
+        with patch.object(agent, "execute", return_value=live_search(digest="changed-export")):
+            answer = await agent.answer(question)
+        self.assertEqual(answer, "Обновлённый предел [Enew].")
+        self.assertEqual(agent.last_grounding["status"], "cited")
+        self.assertIn(question, model.questions[-1])
+        self.assertIn("Eold", model.questions[-1])
+        self.assertIn("Enew", model.questions[-1])
+
+    async def test_unknown_citations_are_repaired_once_and_never_silently_accepted(self):
+        model = ScriptedModel([
+            Turn([Call("read", "search_inforesource", {})]),
+            Turn(text="Неподтверждённое [Efake]."),
+            Turn(text="Всё ещё неподтверждённое [Efake].")])
+        agent = Agent(None, model, self.trace)
+        with patch.object(agent, "execute", return_value=live_search()):
+            await agent.answer("Проверь примеси аргона")
+        self.assertEqual(len(model.questions), 2)
+        self.assertEqual(agent.last_grounding["status"], "invalid_citations")
+        self.assertEqual(agent.last_grounding["unknown_citations"], ["Efake"])
+
+    async def test_missing_data_recovery_keeps_original_component(self):
+        question = "Сравни верхние пределы содержания азота в аргоновых газах"
+        model = ScriptedModel([Turn(text="Ответ без чтения"),
+                               Turn([Call("read", "search_inforesource", {"query": "N"})]),
+                               Turn(text="Азот [Enew].")])
+        agent = Agent(None, model, self.trace)
+        with patch.object(agent, "execute", return_value=live_search()):
+            await agent.answer(question)
+        self.assertIn(question, model.questions[1])
+        self.assertNotIn("Передай названия газов", model.questions[1])
+        self.assertEqual(agent.last_grounding["status"], "cited")
+
+    async def test_budget_finalizer_repairs_citations_without_losing_original_question(self):
+        question = "Сравни содержание азота в аргоновых газах"
+        model = ScriptedModel([Turn([Call("read", "search_inforesource", {})]),
+                               Turn(text="Старый вывод [Efake]."),
+                               Turn(text="Подтверждённая запись [Enew].")])
+        agent = Agent(None, model, self.trace, max_rounds=1)
+        with patch.object(agent, "execute", return_value=live_search()):
+            answer = await agent.answer(question)
+        self.assertEqual(answer, "Подтверждённая запись [Enew].")
+        self.assertTrue(all(question in message for message in model.questions))
+        self.assertEqual(agent.last_grounding["status"], "cited")
 
     async def test_repeated_gas_class_comparison_uses_live_analysis_without_model(self):
         title = "База технологических газов"

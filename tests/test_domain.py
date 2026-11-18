@@ -51,9 +51,20 @@ class DomainTests(unittest.TestCase):
     def test_live_export_parameters_and_projection(self):
         exporter = Mock(return_value=self.raw)
         service = Service("live", {"X-API-KEY": "test-only"}, exporter)
-        graph = service.read(Selection(path=self.path, depth=2, start="known/path"))
-        exporter.assert_called_once_with(self.path, depth=2, start="known/path", headers={"X-API-KEY": "test-only"})
+        graph = service.read(Selection(path=self.path, depth=2, start="known/path;"))
+        exporter.assert_called_once_with(self.path, depth=2, start="known/path;", headers={"X-API-KEY": "test-only"})
         self.assertEqual(graph.source, "live_api")
+
+    def test_export_json_pointer_is_rejected_before_network(self):
+        exporter = Mock()
+        service = Service("live", {}, exporter)
+        for start in ("/successors/0/successors/1", "/root", "#/root/successors/0"):
+            with self.subTest(start=start):
+                result = respond(lambda: service.read(Selection(path=self.path, start=start)))
+                self.assertTrue(result.isError)
+                self.assertEqual(result.structuredContent["error"]["code"], "INVALID_START_PATH")
+                self.assertIn("JSON Pointer", result.structuredContent["error"]["message"])
+        exporter.assert_not_called()
 
     def test_count_links_cycles_and_repeated_ids_without_inventing_total(self):
         # Synthetic universal export: repeated node ID + back-reference + external reference.
@@ -65,6 +76,15 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(counts.link_occurrences, 2)
         self.assertEqual(counts.edge_occurrences, 4)
         self.assertFalse(counts.full_graph_count)
+
+    def test_label_trail_is_rejected_before_network(self):
+        exporter = Mock()
+        service = Service("live", {}, exporter)
+        trail = "База технологических газов/Моногазы/Газы на основе Аргона/Аргон газообразный высокой чистоты марка 6.0"
+        result = respond(lambda: service.read(Selection(path=self.path, start=trail)))
+        self.assertEqual(result.structuredContent["error"]["code"], "INVALID_START_PATH")
+        self.assertIn("read_export_node", result.structuredContent["error"]["hint"])
+        exporter.assert_not_called()
 
     def test_node_limit_rejects_without_partial_success(self):
         with self.assertRaises(Fault) as error:

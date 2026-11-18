@@ -39,6 +39,10 @@ async def save_model_failure(response, url, payload, headers):
             error = {}
         metadata = error.get("metadata")
         details = {k: error[k] for k in ("code", "type", "param", "message") if isinstance(error.get(k), (str, int))}
+        # Recognize standard transport errors without storing arbitrary plaintext
+        # responses, which may echo prompts or credentials.
+        if body_format == "non_json" and not truncated and bytes(raw).strip() == b"Invalid HTTP request received.":
+            details = {"code": "invalid_http_request", "message": "Invalid HTTP request received."}
         if isinstance(data, dict):
             for key in ("code", "type", "message", "detail", "title"):
                 if isinstance(data.get(key), (str, int)):
@@ -54,6 +58,7 @@ async def save_model_failure(response, url, payload, headers):
                 return value[:2000]
             return value
         report = {"host": urlsplit(url).hostname, "status": response.status_code,
+                  "path": urlsplit(url).path,
                   "model": clean(payload.get("model")),
                   "max_output_tokens": payload.get("max_tokens", payload.get("max_output_tokens", payload.get("options", {}).get("num_predict"))),
                   "response": {

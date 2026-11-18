@@ -13,7 +13,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field, ValidationError
 
 from domain import (CountReport, Depth, Error, Fault, FolderChange, FundListing, FundSearchReport, GasCompositionReport, Graph, Listing, NodeLimit,
-                    ResourcePath, Result, Selection, Service, StartPath, SearchReport, ComparisonReport, RankingReport)
+                    ResourcePath, Result, Selection, Service, StartPath, SearchReport, ComparisonReport, RankingReport, ExportNodeReport)
 import iacpaas_client as api
 
 
@@ -75,13 +75,13 @@ def create_server(service: Service, port=8765) -> FastMCP:
     @server.tool(annotations=read)
     async def get_subgraph(path: ResourcePath, depth: Depth = 1, start: StartPath = "",
                            max_nodes: NodeLimit = 100) -> Annotated[CallToolResult, Result[Graph]]:
-        """Read a bounded universal export, depth 0..3. Empty start means resource root; otherwise use a known IACPaaS concept path. Ancestors may be included. Snapshot mode has only depth=0."""
+        """Read a bounded universal export from the root with start='', depth 0..3. For a record found in search use read_export_node with its pointer and export_sha256. Never build start from trail labels or JSON Pointers. A nonempty start is only for an explicitly confirmed platform concept path ending in ';'. Ancestors may be included. Snapshot mode has only depth=0."""
         return await asyncio.to_thread(respond, lambda: service.read(Selection(path=path, depth=depth, start=start, max_nodes=max_nodes)))
 
     @server.tool(annotations=read)
     async def count_graph(path: ResourcePath, depth: Depth = 0, start: StartPath = "",
                           max_nodes: NodeLimit = 100) -> Annotated[CallToolResult, Result[CountReport]]:
-        """Count occurrences, defined IDs and links in a bounded export, including ancestors. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges."""
+        """Count occurrences, defined IDs and links in a bounded export, including ancestors. start must be empty or a confirmed IACPaaS concept path, never an export JSON Pointer. Never a full graph count. Link targets are not resolved; depth=0 normally yields one root and zero edges."""
         return await asyncio.to_thread(respond, lambda: service.count(Selection(path=path, depth=depth, start=start, max_nodes=max_nodes)))
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False,
@@ -109,6 +109,19 @@ def create_server(service: Service, port=8765) -> FastMCP:
     ) -> Annotated[CallToolResult, Result[SearchReport]]:
         """Search inside a resource found in the catalog or My Fund. Query is a literal case-insensitive substring in name/value/meta/link/comment; try one term, formula or stem at a time. Returns fields, trails, pointers and evidence IDs. Depth 0..10; an empty result only applies to this export and term."""
         return await asyncio.to_thread(respond, lambda: service.search(path, query, depth, limit))
+
+    @server.tool(annotations=read)
+    async def read_export_node(
+        path: ResourcePath,
+        pointer: Annotated[str, Field(max_length=2048, strict=True)],
+        export_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", strict=True)],
+        depth: Annotated[int, Field(ge=0, le=10, strict=True)] = 10,
+        levels: Annotated[int, Field(ge=0, le=6, strict=True)] = 6,
+        max_nodes: NodeLimit = 200,
+    ) -> Annotated[CallToolResult, Result[ExportNodeReport]]:
+        """Read a selected record and its descendants using pointer, export_sha256 and requested_depth from search_inforesource or analyze_gas_composition. No platform start path is needed. The same-depth export is read again; changed hashes fail with EXPORT_CHANGED. Root pointer is ''. levels limits descendant depth, max_nodes limits size; truncated means descendants were cut by levels. Does not resolve links."""
+        return await asyncio.to_thread(respond, lambda: service.read_export_node(
+            path, pointer, export_sha256, depth, levels, max_nodes))
 
     @server.tool(annotations=read)
     async def compare_node_children(

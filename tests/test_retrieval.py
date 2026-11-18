@@ -4,10 +4,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock
 
-from answer_evidence import audit_answer, collect_evidence
+from answer_evidence import audit_answer, collect_evidence, revalidate_evidence
 from domain import Fault, Resource, Service
 from gas_composition import analyze_gas_export
-from retrieval import search_export, compare_export, index_export, rank_export
+from retrieval import search_export, compare_export, index_export, rank_export, read_node_export
 from agent import child_environment
 from smoke import connect
 
@@ -29,6 +29,54 @@ RIGHT = "/successors/1/successors/0"
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_read_found_record_by_pointer_preserves_source_and_evidence(self):
+        raw = fixture()
+        search = search_export(RESOURCE, raw, "Группа А", 10, 20, "live_api")
+        found = search.matches[0]
+        result = read_node_export(RESOURCE, raw, found.pointer, search.export_sha256, 10, 6, 200, "live_api")
+        self.assertEqual(result.selected.evidence_id, found.evidence_id)
+        self.assertEqual([r.fields["id"] for r in result.descendants], ["3", "4", "5"])
+        self.assertFalse(result.truncated)
+        self.assertEqual(result.export_sha256, search.export_sha256)
+        sources = collect_evidence(result.model_dump())
+        self.assertEqual(len(sources), 4)
+        self.assertTrue(all(r["source"] == "live_api" and r["requested_depth"] == 10 for r in sources))
+        self.assertEqual(audit_answer(f"Данные [{found.evidence_id}]", {r["evidence_id"]: r for r in sources})["status"], "cited")
+
+    def test_pointer_read_rejects_changed_export_and_missing_pointer(self):
+        raw = fixture()
+        _, digest = index_export(raw)
+        changed = copy.deepcopy(raw)
+        changed["successors"].reverse()
+        for candidate, pointer, expected in ((changed, LEFT, "EXPORT_CHANGED"), (raw, "/invented", "INVALID_ARGUMENT")):
+            with self.subTest(expected=expected), self.assertRaises(Fault) as error:
+                read_node_export(RESOURCE, candidate, pointer, digest, 10, 6, 200, "live_api")
+            self.assertEqual(error.exception.code, expected)
+
+    def test_pointer_read_enforces_subtree_limits_and_does_not_follow_links(self):
+        raw = fixture()
+        raw["successors"][0]["successors"].append({"link": "Other$/record;"})
+        _, digest = index_export(raw)
+        result = read_node_export(RESOURCE, raw, "/successors/0", digest, 10, 0, 200, "live_api")
+        self.assertTrue(result.truncated)
+        self.assertEqual(result.descendants, [])
+        with self.assertRaises(Fault) as error:
+            read_node_export(RESOURCE, raw, "/successors/0", digest, 10, 6, 2, "live_api")
+        self.assertEqual(error.exception.code, "RESULT_LIMIT")
+        result = read_node_export(RESOURCE, raw, "/successors/0/successors/1", digest, 10, 6, 200, "live_api")
+        self.assertEqual(result.selected.fields["link"], "Other$/record;")
+        self.assertEqual(result.descendants, [])
+
+    def test_service_pointer_read_uses_full_export_without_platform_start(self):
+        raw = fixture()
+        _, digest = index_export(raw)
+        exporter = Mock(return_value=raw)
+        service = Service("live", {}, exporter=exporter)
+        service.catalog = [RESOURCE]
+        result = service.read_export_node(RESOURCE.path, LEFT, digest, 10, 6, 200)
+        self.assertEqual(result.selected.fields["id"], "3")
+        exporter.assert_called_once_with(RESOURCE.path, depth=10, start=None, headers={})
+
     def test_gas_analysis_uses_nested_components_and_preserves_joint_limits(self):
         def node(meta, *children, **fields):
             return dict(meta=meta, successors=list(children), **fields)
@@ -155,6 +203,41 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(audit_answer("Да [Efake]", ledger)["status"], "invalid_citations")
         self.assertEqual(audit_answer("Да [Efake]", ledger)["sources"], [])
 
+    def test_historical_witnesses_require_identical_fresh_export(self):
+        raw = fixture()
+        old = collect_evidence(search_export(RESOURCE, raw, "X", 10, 20, "live_api").model_dump())
+        history = {r["evidence_id"]: r for r in old}
+        witness = next(r for r in old if r["pointer"] != "/matches")
+        fresh = collect_evidence(search_export(RESOURCE, raw, "Z", 10, 20, "live_api").model_dump())
+        ledger = revalidate_evidence(history, {r["evidence_id"]: r for r in fresh})
+        self.assertTrue(ledger[witness["evidence_id"]]["revalidated"])
+        self.assertEqual(audit_answer(f"X [{witness['evidence_id']}]", ledger)["status"], "cited")
+        for field, changed in (("export_sha256", "changed"), ("source", "saved_snapshot"),
+                               ("requested_depth", 3), ("export_sha256", None)):
+            with self.subTest(field=field, changed=changed):
+                altered = [{**r, field: changed} for r in fresh]
+                ledger = revalidate_evidence(history, {r["evidence_id"]: r for r in altered})
+                self.assertNotIn(witness["evidence_id"], ledger)
+        different_resource = [{**r, "resource": {**r["resource"], "resource_id": "other"}} for r in fresh]
+        ledger = revalidate_evidence(history, {r["evidence_id"]: r for r in different_resource})
+        self.assertNotIn(witness["evidence_id"], ledger)
+
+    def test_citation_audit_distinguishes_historical_and_unknown_references(self):
+        audit = audit_answer("Раньше [Eold], неизвестно [Efake]", {}, {"Eold": {}})
+        self.assertEqual(audit["status"], "invalid_citations")
+        self.assertEqual(audit["historical_citations"], ["Eold"])
+        self.assertEqual(audit["unknown_citations"], ["Efake"])
+        self.assertIn("предыдущих вопросах", audit["note"])
+
+    def test_grouped_citations_are_all_checked(self):
+        ledger = {"Efirst": {}, "Esecond": {}}
+        audit = audit_answer("Предел [Efirst, Esecond], повтор [Efirst].", ledger)
+        self.assertEqual(audit["status"], "cited")
+        self.assertEqual(len(audit["sources"]), 2)
+        audit = audit_answer("Предел [Efirst; Efake].", ledger)
+        self.assertEqual(audit["status"], "invalid_citations")
+        self.assertEqual(audit["unknown_citations"], ["Efake"])
+
     def test_only_configured_matching_resource_is_searched(self):
         service = Service("live", {}, exporter=Mock(return_value=fixture()))
         service.catalog = [RESOURCE]
@@ -179,6 +262,7 @@ class RetrievalTransportTests(unittest.IsolatedAsyncioTestCase):
                 tools = {t.name: t for t in (await session.list_tools()).tools}
                 self.assertTrue(tools["search_inforesource"].annotations.readOnlyHint)
                 self.assertTrue(tools["compare_node_children"].annotations.readOnlyHint)
+                self.assertTrue(tools["read_export_node"].annotations.readOnlyHint)
                 result = await session.call_tool("search_inforesource", {
                     "path": "Загрузки/Система единиц физических величин", "query": "Система", "depth": 0})
                 self.assertFalse(result.isError)
@@ -186,3 +270,10 @@ class RetrievalTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.structuredContent["data"]["source"], "saved_snapshot")
                 import jsonschema
                 jsonschema.validate(result.structuredContent, tools["search_inforesource"].outputSchema)
+                search = result.structuredContent["data"]
+                result = await session.call_tool("read_export_node", {
+                    "path": search["resource"]["path"], "pointer": search["matches"][0]["pointer"],
+                    "export_sha256": search["export_sha256"], "depth": 0, "levels": 0})
+                self.assertFalse(result.isError)
+                self.assertEqual(result.structuredContent["data"]["selected"]["fields"]["id"], "303808806649860")
+                jsonschema.validate(result.structuredContent, tools["read_export_node"].outputSchema)

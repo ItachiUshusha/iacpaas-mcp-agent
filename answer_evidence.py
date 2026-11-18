@@ -5,7 +5,7 @@ import re
 
 from retrieval import fields, label
 
-CITATION = re.compile(r"\[(E[A-Za-z0-9]+)\]")
+CITATION = re.compile(r"\[(E[A-Za-z0-9]+(?:\s*[,;]\s*E[A-Za-z0-9]+)*)\]")
 
 
 def collect_evidence(data):
@@ -22,6 +22,10 @@ def collect_evidence(data):
         records.append({**common, **node})
     for hit in data.get("matches", []):
         add(hit)
+    if "selected" in data and "descendants" in data:
+        add(data["selected"])
+        for node in data["descendants"]:
+            add(node)
     if "matches" in data:
         fields_used = {key: data[key] for key in ("query", "scanned_nodes", "total_matches", "matches_truncated")}
         identity = json.dumps([common, fields_used], ensure_ascii=False, sort_keys=True)
@@ -69,15 +73,38 @@ def collect_evidence(data):
     return records
 
 
-def audit_answer(text, evidence):
-    cited = list(dict.fromkeys(CITATION.findall(text)))
+def revalidate_evidence(history, fresh):
+    """Renew historical witnesses only after reading the identical source export."""
+    def export_key(record):
+        resource = record.get("resource", {})
+        digest = record.get("export_sha256")
+        if not digest:
+            return None
+        return (resource.get("path"), resource.get("resource_id"), record.get("source"),
+                record.get("requested_depth"), digest)
+
+    exports = {key for record in fresh.values() if (key := export_key(record)) is not None}
+    renewed = {ref: {**record, "revalidated": True} for ref, record in history.items()
+               if export_key(record) in exports}
+    return {**renewed, **fresh}
+
+
+def audit_answer(text, evidence, history=None):
+    cited = list(dict.fromkeys(ref for group in CITATION.findall(text)
+                               for ref in re.findall(r"E[A-Za-z0-9]+", group)))
     invalid = [ref for ref in cited if ref not in evidence]
+    historical = [ref for ref in invalid if ref in (history or {})]
+    unknown = [ref for ref in invalid if ref not in historical]
     sources = [evidence[ref] for ref in cited if ref in evidence]
     status = "invalid_citations" if invalid else "cited" if sources else "uncited"
     notes = {
         "cited": "Ссылки существуют в результатах инструментов. Это проверка источников, не автоматическая проверка смысла каждого утверждения.",
         "uncited": "Ответ не содержит проверяемых ссылок на записи. Успешный вызов MCP сам по себе не подтверждает вывод модели.",
-        "invalid_citations": "Модель сослалась на записи, которых нет среди полученных доказательств. Не используйте этот ответ как подтверждённый."
+        "invalid_citations": "В ответе есть ссылки, которых нет среди подтверждённых источников текущего запроса. Не используйте этот ответ как подтверждённый."
     }
-    return {"status": status, "note": notes[status], "invalid_citations": invalid, "sources": sources,
+    note = notes[status]
+    if historical:
+        note += " Часть ссылок получена в предыдущих вопросах и ещё не подтверждена повторным чтением того же экспорта."
+    return {"status": status, "note": note, "invalid_citations": invalid,
+            "historical_citations": historical, "unknown_citations": unknown, "sources": sources,
             "available_evidence_count": len(evidence)}
