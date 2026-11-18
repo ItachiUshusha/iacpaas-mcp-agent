@@ -54,6 +54,7 @@ class RetryContext:
     history_length: int
     paths: set
     evidence: dict
+    resources: dict
 
 
 def failure(code, message, hint):
@@ -121,6 +122,7 @@ class Agent:
         self.user_request = ""
         self.tools = {}
         self.known_paths = set()
+        self.known_resources = {}
         self.attempted_writes = set()
         self.evidence = {}
         self.last_grounding = audit_answer('', {})
@@ -149,7 +151,26 @@ class Agent:
         except (ValueError, jsonschema.ValidationError, TypeError):
             return failure("INVALID_ARGUMENT", "Аргументы не соответствуют JSON Schema.", "Исправьте аргументы по схеме; глубина 0..3, max_nodes 1..200.")
         if call.name in READ_ONLY_TOOLS - DISCOVERY_TOOLS and arguments.get("path") not in self.known_paths:
-            return failure("PATH_NOT_DISCOVERED", "Путь ещё не подтверждён каталогом или фондом.", "Используйте точный path из list_inforesources или list_fund_resources.")
+            supplied = arguments.get("path", "").strip().casefold()
+            candidates = sorted(path for path in self.known_paths if supplied and supplied in {
+                path.casefold(), path.rsplit("/", 1)[-1].casefold(),
+                self.known_resources.get(path, {}).get("title", "").strip().casefold(),
+            })
+            if len(candidates) == 1:
+                canonical = candidates[0]
+                self.trace.add("resource_path_resolved", tool=call.name,
+                               supplied=arguments["path"], path=canonical)
+                arguments = {**arguments, "path": canonical}
+                call.arguments = (json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+                                  if isinstance(call.arguments, str) else arguments)
+            elif candidates:
+                return failure("PATH_AMBIGUOUS", "Название соответствует нескольким подтверждённым ресурсам.",
+                               "Выберите точный path: " + "; ".join(candidates[:10]))
+            else:
+                known = "; ".join(sorted(self.known_paths)[:10])
+                return failure("PATH_NOT_DISCOVERED", "Ресурс ещё не найден в каталоге или фонде.",
+                               "Сначала вызовите list_inforesources или list_fund_resources и используйте полный path. "
+                               + ("Уже подтверждены: " + known if known else "Не подменяйте путь названием базы."))
         if call.name in {"get_subgraph", "count_graph"}:
             try:
                 validate_concept_start(arguments.get("start", ""))
@@ -185,7 +206,9 @@ class Agent:
                 return failure("MCP_TOOL_ERROR", "Сервер отметил результат как ошибку.", "Не используйте его как успешные данные.")
             return result
         if call.name in DISCOVERY_TOOLS:
-            self.known_paths.update(row["path"] for row in result["data"]["resources"])
+            for row in result["data"]["resources"]:
+                self.known_paths.add(row["path"])
+                self.known_resources[row["path"]] = row
         return result
 
     def finish(self, text, evidence=None):
@@ -225,6 +248,11 @@ class Agent:
                         "description": "Read/count from the resource root with start=''. "
                                        "For a found record use read_export_node if available; "
                                        "for gas compositions use analyze_gas_composition. " + tool.get("description", "")}
+            if tool.get("name") in READ_ONLY_TOOLS - DISCOVERY_TOOLS and self.known_paths:
+                schema = tool["inputSchema"]
+                properties = {**schema["properties"]}
+                properties["path"] = {**properties["path"], "enum": sorted(self.known_paths)}
+                tool = {**tool, "inputSchema": {**schema, "properties": properties}}
             definitions.append(tool)
         if self.replay is not None and not self.write_in_turn:
             turn, replayed = await self.replay.step(self.model, definitions)
@@ -322,8 +350,10 @@ class Agent:
             # Treat an immediate repeat as a retry of the same turn, including tool discovery.
             del self.model.history[previous.history_length:]
             self.known_paths = previous.paths.copy()
+            self.known_resources = previous.resources.copy()
             self.evidence = previous.evidence.copy()
-        context = RetryContext(question, len(self.model.history), self.known_paths.copy(), self.evidence.copy())
+        context = RetryContext(question, len(self.model.history), self.known_paths.copy(),
+                               self.evidence.copy(), self.known_resources.copy())
         answer = await self.answer_turn(question)
         if not self.write_in_turn:
             self.retry_context = context
